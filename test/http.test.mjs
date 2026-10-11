@@ -99,6 +99,13 @@ test('header values are trimmed and names keep their wire spelling', () => {
   assert.equal(h.value, 'spaced value');
 });
 
+test('headerValue: case-insensitive, first occurrence wins, undefined when absent', () => {
+  const msg = parseHttpMessage(Buffer.from('HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nset-cookie: b=2\r\n\r\n', 'latin1'));
+  assert.equal(headerValue(msg, 'SET-COOKIE'), 'a=1');
+  assert.equal(msg.headers.filter((h) => h.name.toLowerCase() === 'set-cookie').length, 2, 'duplicates are kept in headers[]');
+  assert.equal(headerValue(msg, 'content-type'), undefined);
+});
+
 test('an incomplete head is an error, not a guess', () => {
   assert.throws(() => parseHttpMessage(Buffer.from('HTTP/1.1 200 OK\r\nContent-Length: 3\r\n')), /incomplete/);
 });

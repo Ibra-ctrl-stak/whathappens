@@ -15,11 +15,17 @@ const bytesOf = (e) => buffers[e.buffer].subarray(e.offset, e.offset + e.length)
 const ofKind = (layer, kind) => events.filter((e) => e.layer === layer && e.kind === kind);
 const LAYERS = ['dns', 'tcp', 'tls', 'http'];
 
-test('events are in time order and start with the first DNS query at t=0', () => {
-  for (let i = 1; i < events.length; i += 1) assert.ok(events[i].t >= events[i - 1].t, `event ${i} goes back in time`);
-  assert.equal(events[0].layer, 'dns');
-  assert.equal(events[0].kind, 'query');
-  assert.equal(events[0].t, 0);
+test('t is each event\'s own recorded time, counted from the first DNS query', () => {
+  assert.equal(timeline.origin, sessionJson.dns[0].sentAt);
+  assert.deepEqual([events[0].layer, events[0].kind, events[0].t], ['dns', 'query', 0]);
+  for (const e of events) assert.equal(e.t, Math.round((e.at - sessionJson.dns[0].sentAt) * 1000) / 1000);
+});
+
+test('at the same instant: the TCP chunk, then the TLS records it completed, then HTTP', () => {
+  const request = ofKind('http', 'request')[0];
+  const sameInstant = events.filter((e) => e.t === request.t).map((e) => e.layer);
+  assert.deepEqual([...new Set(sameInstant)], ['tcp', 'tls', 'http']);
+  assert.deepEqual(sameInstant, [...sameInstant].sort((a, b) => LAYERS.indexOf(a) - LAYERS.indexOf(b)));
 });
 
 test('layers first appear in the order DNS -> TCP -> TLS -> HTTP', () => {
@@ -79,8 +85,9 @@ test('DNS: one query and one response event per answered exchange, carrying the 
   const responses = ofKind('dns', 'response');
   assert.equal(queries.length, sessionJson.dns.length);
   assert.equal(responses.length, sessionJson.dns.filter((e) => e.responseHex).length);
-  queries.forEach((q, i) => assert.equal(bytesOf(q).toString('hex'), sessionJson.dns[i].queryHex));
-  responses.forEach((r, i) => assert.equal(bytesOf(r).toString('hex'), sessionJson.dns[i].responseHex));
+  const recordedOn = (e) => sessionJson.dns.find((d) => d.localPort === e.detail.localPort);
+  for (const q of queries) assert.equal(bytesOf(q).toString('hex'), recordedOn(q).queryHex);
+  for (const r of responses) assert.equal(bytesOf(r).toString('hex'), recordedOn(r).responseHex);
   assert.match(responses.at(-1).summary, /140\.82\.121\.3/);
 });
 
@@ -116,5 +123,27 @@ test('a lost DNS datagram shows up as its query plus a "lost" event with no byte
   assert.equal(lostEvent.layer, 'dns');
   assert.equal(lostEvent.buffer, null);
   assert.equal(lostEvent.length, 0);
-  assert.equal(t.events.filter((e) => e.layer === 'dns' && e.kind === 'query').length, 4);
+  assert.equal(lostEvent.t, Math.round((lost.failedAt - t.origin) * 1000) / 1000);
+  assert.match(lostEvent.summary, /no answer from ns-421\.awsdns-52\.com: timeout 2500ms/);
+  assert.equal(lostEvent.detail.localPort, 50000);
+  const dnsQueries = t.events.filter((e) => e.layer === 'dns' && e.kind === 'query');
+  assert.equal(dnsQueries.length, 4);
+  const position = (e) => t.events.indexOf(e);
+  const lostQuery = dnsQueries.find((q) => q.detail.localPort === 50000);
+  assert.ok(position(lostQuery) < position(lostEvent), 'the lost query is sent before it is declared lost');
+});
+
+test('a session read in 1-byte TCP chunks yields the same TLS records and HTTP ranges', () => {
+  const oneByte = {
+    ...sessionJson,
+    tls: {
+      ...sessionJson.tls,
+      raw: sessionJson.tls.raw.flatMap((c) => c.hex.match(/../g).map((byte, i) => ({ ...c, at: c.at + i * 1e-4, hex: byte }))),
+    },
+  };
+  const t = buildTimeline(loadSession(oneByte));
+  const shape = (tl, layer) => tl.events.filter((e) => e.layer === layer).map((e) => [e.kind, e.dir, e.buffer, e.offset, e.length, e.summary]);
+  assert.deepEqual(shape(t, 'tls').filter(([kind]) => kind === 'record'), shape(timeline, 'tls').filter(([kind]) => kind === 'record'));
+  assert.deepEqual(shape(t, 'http'), shape(timeline, 'http'));
+  assert.equal(t.events.filter((e) => e.layer === 'tcp' && e.length === 1).length, t.buffers['tcp/out'].length + t.buffers['tcp/in'].length);
 });

@@ -8,7 +8,6 @@ import { decryptSession } from './tls/decrypt.js';
 import { parseHttpMessage, headerValue } from './http/message.js';
 import { printable, printableDeep } from './text.js';
 
-const LAYER_ORDER = Object.freeze({ dns: 0, tcp: 1, tls: 2, http: 3 });
 const RECORD_HEADER_LEN = 5;
 const MAX_LISTED_NS = 2;
 const RCODE_NAMES = Object.freeze({ 1: 'FORMERR', 2: 'SERVFAIL', 3: 'NXDOMAIN', 4: 'NOTIMP', 5: 'REFUSED' });
@@ -246,6 +245,7 @@ function decryptOrExplain(tls) {
 export function buildTimeline(session) {
   const decrypted = decryptOrExplain(session.tls);
   const bounds = { out: chunkBounds(session.tls.raw, 'out'), in: chunkBounds(session.tls.raw, 'in') };
+  // Parts are listed in layer order; with the index tie-break, equal times keep DNS < TCP < TLS < HTTP.
   const parts = [dnsPart(session.dns), tcpPart(session.tls, bounds), tlsPart(session.tls, decrypted, bounds), httpPart(decrypted, bounds)];
   const all = parts.flatMap((p) => p.events);
   const missing = all.find((e) => !Number.isFinite(e.at));
@@ -258,7 +258,7 @@ export function buildTimeline(session) {
       t: roundUs(e.at - origin), ...e, index,
       summary: printable(e.summary), problem: e.problem === null ? null : printable(e.problem), detail: printableDeep(e.detail),
     }))
-    .sort((a, b) => a.t - b.t || LAYER_ORDER[a.layer] - LAYER_ORDER[b.layer] || a.index - b.index)
+    .sort((a, b) => a.t - b.t || a.index - b.index)
     .map(({ index, ...e }) => e);
   return { origin, buffers: Object.fromEntries(parts.flatMap((p) => p.buffers)), events };
 }
