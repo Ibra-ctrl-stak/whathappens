@@ -1,0 +1,45 @@
+:root {
+  --bg: #0f1115; --panel: #171a21; --text: #d8dee9; --muted: #8a93a6; --line: #262b36;
+  --dns: #7aa2f7; --tcp: #9ece6a; --tls: #e0af68; --http: #bb9af7; --bad: #f7768e;
+  font: 14px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+header { position: sticky; top: 0; z-index: 1; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+h1 { margin: 0 0 4px; font-size: 18px; }
+.stats { margin: 0 0 8px; color: var(--muted); }
+.filters { display: flex; gap: 8px; margin: 0; padding: 0; border: 0; }
+.filters legend { float: left; margin-right: 8px; color: var(--muted); }
+main { padding: 8px 20px 40px; }
+.error { color: var(--bad); }
+
+.events { list-style: none; margin: 0; padding: 0; }
+.event {
+  display: grid; grid-template-columns: 80px 140px 52px 20px 140px 1fr auto;
+  gap: 10px; align-items: baseline; padding: 3px 6px; border-bottom: 1px solid var(--line);
+}
+.event:hover { background: var(--panel); }
+.time { text-align: right; color: var(--muted); }
+.track { position: relative; align-self: center; height: 4px; background: var(--line); border-radius: 2px; }
+.dot { position: absolute; top: -3px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; background: currentColor; }
+.chip { display: inline-block; padding: 0 6px; border-radius: 3px; border: 1px solid currentColor; font-size: 12px; text-align: center; }
+.dir { text-align: center; color: var(--muted); }
+.kind { color: var(--muted); }
+.what { display: flex; flex-direction: column; min-width: 0; }
+.summary { overflow-wrap: anywhere; }
+.range { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+.layer-dns { color: var(--dns); } .layer-tcp { color: var(--tcp); }
+.layer-tls { color: var(--tls); } .layer-http { color: var(--http); }
+.event.layer-dns, .event.layer-tcp, .event.layer-tls, .event.layer-http { color: var(--text); }
+.event.layer-dns .chip, .event.layer-dns .dot { color: var(--dns); }
+.event.layer-tcp .chip, .event.layer-tcp .dot { color: var(--tcp); }
+.event.layer-tls .chip, .event.layer-tls .dot { color: var(--tls); }
+.event.layer-http .chip, .event.layer-http .dot { color: var(--http); }
+
+.event.damaged { background: rgb(247 118 142 / 8%); }
+.event.damaged .dot { color: var(--bad); }
+.problem { color: var(--bad); font-size: 12px; }
+
+.hide-dns .layer-dns, .hide-tcp .layer-tcp, .hide-tls .layer-tls, .hide-http .layer-http { display: none; }

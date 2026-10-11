@@ -11,6 +11,7 @@
     "day1": "node day1.mjs",
     "compare": "node compare-wireshark.mjs",
     "timeline": "node timeline.mjs",
+    "serve": "node serve.mjs",
     "test": "node --test",
     "coverage": "node --test --experimental-test-coverage --test-coverage-include=src/**"
   }
