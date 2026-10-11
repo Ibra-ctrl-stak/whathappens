@@ -11,13 +11,20 @@ h1 { margin: 0 0 4px; font-size: 18px; }
 .stats { margin: 0 0 8px; color: var(--muted); }
 .filters { display: flex; gap: 8px; margin: 0; padding: 0; border: 0; }
 .filters legend { float: left; margin-right: 8px; color: var(--muted); }
-main { display: grid; grid-template-columns: minmax(0, 1fr) 640px; gap: 16px; padding: 8px 20px 40px; align-items: start; }
-@media (width < 1200px) { main { grid-template-columns: 1fr; } }
+/* List : panel = 3 : 2. The list never gets narrower than one event row needs (fixed columns
+   + 16ch of summary); when that does not fit next to the panel, the panel moves below. */
+main {
+  display: grid; grid-template-columns: minmax(var(--list-min), 3fr) minmax(0, 2fr);
+  gap: 16px; padding: 8px 20px 40px; align-items: start;
+  --list-min: 760px;
+}
+@media (width < 1200px) { main { grid-template-columns: minmax(0, 1fr); } }
+.timeline { min-width: 0; }
 .error { color: var(--bad); }
 
 .events { list-style: none; margin: 0; padding: 0; }
 .event {
-  display: grid; grid-template-columns: 80px 140px 52px 20px 140px 1fr auto;
+  display: grid; grid-template-columns: 80px 120px 52px 20px 130px minmax(16ch, 1fr) auto;
   gap: 10px; align-items: baseline; padding: 3px 6px; border-bottom: 1px solid var(--line);
 }
 .event { cursor: pointer; }
@@ -50,12 +57,14 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 640px; gap: 16px; pa
 
 /* hex panel (slice 2) */
 .hex-panel {
-  position: sticky; top: 120px; max-height: calc(100vh - 140px); overflow: auto;
+  position: sticky; top: 120px; max-height: calc(100vh - 140px); overflow: auto; min-width: 0;
   padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
 }
 .hex-title { margin: 0 0 4px; font-size: 14px; overflow-wrap: anywhere; }
 .hex-meta, .hex-hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
-.hex-dump { font-size: 13px; line-height: 1.5; }
+.hex-dump { font-size: 13px; line-height: 1.5; width: max-content; } /* rows keep their width; the panel scrolls */
 .hex-row { display: grid; grid-template-columns: 9ch 49ch 16ch; gap: 2ch; white-space: pre; }
 .hex-offset { color: var(--muted); }
 .hex-ascii { color: var(--muted); }
+/* narrow window: the panel sits below the list and scrolls with the page */
+@media (width < 1200px) { .hex-panel { position: static; max-height: none; } }
