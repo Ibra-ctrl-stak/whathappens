@@ -6,6 +6,7 @@
 import { parseResponse, TYPE } from './dns/packet.js';
 import { decryptSession } from './tls/decrypt.js';
 import { parseHttpMessage, headerValue } from './http/message.js';
+import { printable, printableDeep } from './text.js';
 
 const LAYER_ORDER = Object.freeze({ dns: 0, tcp: 1, tls: 2, http: 3 });
 const RECORD_HEADER_LEN = 5;
@@ -251,8 +252,12 @@ export function buildTimeline(session) {
   if (missing) throw new Error(`${missing.layer}/${missing.kind} has no timestamp in this recording`);
 
   const origin = all.reduce((min, e) => Math.min(min, e.at), Infinity); // no spread: sessions can have 100k+ events
+  // Single choke point: every summary/problem/detail string is made printable here.
   const events = all
-    .map((e, index) => ({ t: roundUs(e.at - origin), ...e, index }))
+    .map((e, index) => ({
+      t: roundUs(e.at - origin), ...e, index,
+      summary: printable(e.summary), problem: e.problem === null ? null : printable(e.problem), detail: printableDeep(e.detail),
+    }))
     .sort((a, b) => a.t - b.t || LAYER_ORDER[a.layer] - LAYER_ORDER[b.layer] || a.index - b.index)
     .map(({ index, ...e }) => e);
   return { origin, buffers: Object.fromEntries(parts.flatMap((p) => p.buffers)), events };

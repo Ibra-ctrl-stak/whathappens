@@ -7,6 +7,7 @@ import { decryptSession } from './src/tls/decrypt.js';
 import { serializeSession } from './src/session.js';
 import { describeRecord } from './src/timeline.js';
 import { nowMs } from './src/clock.js';
+import { printable } from './src/text.js';
 
 const HOST = 'github.com';
 const PATH = process.argv[2] ?? '/robots.txt';
@@ -52,7 +53,7 @@ async function main() {
   if (dec.server.records.length > 12) console.log(`    ... ${dec.server.records.length - 12} more`);
 
   const head = dec.server.appData.toString('latin1').split('\r\n\r\n')[0];
-  console.log(`\n  First HTTP response (decrypted by us):\n    ${head.split('\r\n').slice(0, 8).join('\n    ')}`);
+  console.log(`\n  First HTTP response (decrypted by us):\n    ${head.split('\r\n').slice(0, 8).map(printable).join('\n    ')}`);
 
   console.log('\n  Checks:');
   const results = [
