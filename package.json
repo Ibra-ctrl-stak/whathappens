@@ -10,6 +10,8 @@
   "scripts": {
     "day1": "node day1.mjs",
     "compare": "node compare-wireshark.mjs",
-    "test": "node --test"
+    "timeline": "node timeline.mjs",
+    "test": "node --test",
+    "coverage": "node --test --experimental-test-coverage --test-coverage-include=src/**"
   }
 }
