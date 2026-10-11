@@ -68,3 +68,19 @@ main {
 .hex-ascii { color: var(--muted); }
 /* narrow window: the panel sits below the list and scrolls with the page */
 @media (width < 1200px) { .hex-panel { position: static; max-height: none; } }
+
+/* field tree (slice 3) */
+.field-tree, .field-children { list-style: none; margin: 0; padding: 0; }
+.field-tree { max-height: 38vh; overflow: auto; margin-bottom: 10px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.field-children { padding-left: 14px; border-left: 1px solid var(--line); margin-left: 5px; }
+.field-row { display: flex; gap: 8px; align-items: baseline; padding: 1px 4px; cursor: pointer; white-space: nowrap; }
+.field-row:hover { background: #20242e; }
+.field-row:focus-visible { outline: 1px solid var(--muted); outline-offset: -1px; }
+.field-row.selected { background: #2d3347; box-shadow: inset 2px 0 0 var(--tls); }
+.field-row.damaged .field-name { color: var(--bad); }
+.field-toggle { width: 1ch; color: var(--muted); cursor: pointer; }
+.field-name { color: var(--text); }
+.field-value { color: var(--tls); overflow: hidden; text-overflow: ellipsis; max-width: 42ch; }
+.field-range { color: var(--muted); font-size: 12px; }
+.byte { cursor: pointer; }
+.byte.hl { background: #4a3f1f; color: #ffe2a8; border-radius: 2px; }

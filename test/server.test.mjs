@@ -157,10 +157,14 @@ test('no event\'s bytes contain a session secret', () => {
   });
 });
 
-test('hex.js is served as JavaScript', async () => {
-  const res = await request(`${page()}hex.js`);
-  assert.equal(res.status, 200);
-  assert.match(res.headers['content-type'], /^text\/javascript/);
+test('every module the page imports is served as JavaScript', async () => {
+  const imports = [...readFileSync(new URL('app.js', WEB_DIR), 'utf8').matchAll(/from '\.\/([\w-]+\.js)'/g)].map((m) => m[1]);
+  assert.deepEqual(imports.sort(), ['fields.js', 'hex.js']);
+  for (const file of ['app.js', ...imports]) {
+    const res = await request(`${page()}${file}`);
+    assert.equal(res.status, 200, file);
+    assert.match(res.headers['content-type'], /^text\/javascript/);
+  }
 });
 
 const NODE_KEYS = ['children', 'label', 'length', 'name', 'offset', 'problem', 'value'];
