@@ -5,7 +5,7 @@ import http from 'node:http';
 import { readFileSync, readdirSync } from 'node:fs';
 import { loadSession } from '../src/session.js';
 import { buildTimeline } from '../src/timeline.js';
-import { timelineView } from '../src/server/view-model.js';
+import { timelineView, eventBytes } from '../src/server/view-model.js';
 import { startServer } from '../src/server/server.js';
 
 const golden = JSON.parse(readFileSync(new URL('./fixtures/github-robots/session.json', import.meta.url), 'utf8'));
@@ -14,7 +14,7 @@ const WEB_DIR = new URL('../web/', import.meta.url);
 
 let server;
 before(async () => {
-  server = await startServer({ view: timelineView(timeline) });
+  server = await startServer({ view: timelineView(timeline), bytesOf: eventBytes(timeline) });
 });
 after(() => server.close());
 
@@ -109,4 +109,56 @@ test('the page has no inline script or style', () => {
   const html = readFileSync(new URL('index.html', WEB_DIR), 'utf8');
   assert.doesNotMatch(html, /<script(?![^>]*\ssrc=)[^>]*>/i, 'every script has a src');
   assert.doesNotMatch(html, /<style|\sstyle=|\son[a-z]+=/i);
+});
+
+/** Like request(), but keeps the body as raw bytes. */
+function requestBytes(path) {
+  return new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port: server.port, path, headers: { host: `127.0.0.1:${server.port}` } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    }).on('error', reject);
+  });
+}
+
+const indexOf = (predicate) => timeline.events.findIndex(predicate);
+const slice = (e) => timeline.buffers[e.buffer].subarray(e.offset, e.offset + e.length);
+
+test('events/<i>/bytes returns exactly that event\'s bytes', async () => {
+  for (const i of [indexOf((e) => e.kind === 'record'), indexOf((e) => e.kind === 'handshake-message'), indexOf((e) => e.kind === 'response-body')]) {
+    const res = await requestBytes(`${page()}events/${i}/bytes`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers['content-type'], 'application/octet-stream');
+    assert.match(res.headers['content-security-policy'], /default-src 'self'/);
+    assert.deepEqual(res.body, slice(timeline.events[i]));
+  }
+});
+
+for (const [label, index] of [
+  ['an index past the last event', () => String(timeline.events.length)],
+  ['a non-numeric index', () => 'abc'],
+  ['an index with a leading zero', () => '01'],
+  ['a negative index', () => '-1'],
+  ['an event that has no bytes', () => String(indexOf((e) => e.buffer === null))],
+]) {
+  test(`events/<i>/bytes: 404 for ${label}`, async () => {
+    const res = await requestBytes(`${page()}events/${index()}/bytes`);
+    assert.equal(res.status, 404);
+  });
+}
+
+test('no event\'s bytes contain a session secret', () => {
+  const bytesOf = eventBytes(timeline);
+  const secrets = golden.tls.keylog.map((line) => Buffer.from(line.split(' ')[2], 'hex'));
+  timeline.events.forEach((_, i) => {
+    const bytes = bytesOf(i);
+    if (bytes) for (const s of secrets) assert.equal(bytes.indexOf(s), -1);
+  });
+});
+
+test('hex.js is served as JavaScript', async () => {
+  const res = await request(`${page()}hex.js`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers['content-type'], /^text\/javascript/);
 });

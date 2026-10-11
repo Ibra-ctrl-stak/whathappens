@@ -10,6 +10,7 @@ const WEB_DIR = new URL('../../web/', import.meta.url);
 const STATIC = Object.freeze({
   '': ['index.html', 'text/html; charset=utf-8'],
   'app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  'hex.js': ['hex.js', 'text/javascript; charset=utf-8'],
   'style.css': ['style.css', 'text/css; charset=utf-8'],
 });
 
@@ -37,24 +38,37 @@ function send(res, status, type, body, method) {
   res.end(method === 'HEAD' ? undefined : body);
 }
 
+// events/<index>/bytes with a canonical decimal index (no sign, no leading zeros)
+const EVENT_BYTES = /^events\/(0|[1-9]\d{0,8})\/bytes$/;
+
+function eventBytesRoute(path, bytesOf) {
+  const match = EVENT_BYTES.exec(path);
+  const bytes = match ? bytesOf(Number(match[1])) : null;
+  return bytes ? { type: 'application/octet-stream', body: bytes } : null;
+}
+
 /** Decide one request; returns [status, route-or-null]. */
-function check(req, { port, token, table }) {
+function check(req, { port, token, table, bytesOf }) {
   const self = `${HOST}:${port}`;
   if (req.headers.host !== self) return [403, null]; // DNS rebinding: a foreign name pointing at us
   if (req.headers.origin !== undefined && req.headers.origin !== `http://${self}`) return [403, null];
   if (req.method !== 'GET' && req.method !== 'HEAD') return [405, null];
   const prefix = `/${token}/`;
   if (!req.url.startsWith(prefix)) return [404, null];
-  const route = table.get(req.url.slice(prefix.length));
+  const path = req.url.slice(prefix.length);
+  const route = table.get(path) ?? eventBytesRoute(path, bytesOf);
   return route ? [200, route] : [404, null];
 }
 
-/** view: timelineView(...) output. Resolves to { host, port, token, url, close }. */
-export function startServer({ view }) {
+/**
+ * view: timelineView(...) output; bytesOf: eventBytes(...) — (index) -> Buffer | null.
+ * Resolves to { host, port, token, url, close }.
+ */
+export function startServer({ view, bytesOf = () => null }) {
   const token = randomBytes(TOKEN_BYTES).toString('base64url');
   const table = routes(view);
   const server = http.createServer((req, res) => {
-    const [status, route] = check(req, { port: server.address().port, token, table });
+    const [status, route] = check(req, { port: server.address().port, token, table, bytesOf });
     if (route) send(res, status, route.type, route.body, req.method);
     else send(res, status, 'text/plain; charset=utf-8', Buffer.from(`${status}\n`), req.method);
   });
