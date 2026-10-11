@@ -21,7 +21,9 @@ test('request line and headers match Wireshark', () => {
   assert.equal(req.startLine.version, 'HTTP/1.1');
   assert.equal(headerValue(req, 'host'), expected.request.host);
   assert.equal(headerValue(req, 'User-Agent'), expected.request.userAgent);
-  assert.deepEqual(req.body, { offset: req.head.length, length: 0, framing: 'none', declaredLength: 0 });
+  assert.deepEqual(req.body, { offset: req.head.length, length: 0, framing: 'none', declaredLength: 0, complete: true });
+  assert.equal(req.extra, null);
+  assert.deepEqual(req.problems, []);
 });
 
 test('status line, headers and body match Wireshark', () => {
@@ -34,7 +36,41 @@ test('status line, headers and body match Wireshark', () => {
   assert.equal(res.body.declaredLength, expected.response.contentLength);
   assert.equal(res.body.length, expected.response.contentLength);
   assert.equal(sha256(server.appData.subarray(res.body.offset, res.body.offset + res.body.length)), expected.response.bodySha256);
+  assert.equal(res.body.complete, true);
+  assert.equal(res.extra, null);
+  assert.deepEqual(res.problems, []);
 });
+
+const response = (headers, rest) => Buffer.from(`HTTP/1.1 200 OK\r\n${headers}\r\n\r\n${rest}`, 'latin1');
+
+test('Content-Length bounds the body; bytes after it are reported separately', () => {
+  const buf = response('Content-Length: 10', '0123456789NEXT-RESPONSE');
+  const res = parseHttpMessage(buf);
+  assert.equal(slice(buf, res.body), '0123456789');
+  assert.equal(res.body.complete, true);
+  assert.equal(slice(buf, res.extra), 'NEXT-RESPONSE');
+  assert.match(res.problems.join(), /13 bytes after the declared body/);
+});
+
+test('a body shorter than Content-Length is marked incomplete, not padded or trusted', () => {
+  const buf = response('Content-Length: 10', '0123');
+  const res = parseHttpMessage(buf);
+  assert.equal(slice(buf, res.body), '0123');
+  assert.equal(res.body.complete, false);
+  assert.equal(res.extra, null);
+  assert.match(res.problems.join(), /truncated: 4 of 10 bytes/);
+});
+
+for (const bad of ['abc', '-5', '5, 5', '1e3', '']) {
+  test(`Content-Length ${JSON.stringify(bad)} is reported as invalid, never turned into a number`, () => {
+    const buf = response(`Content-Length: ${bad}`, 'xyz');
+    const res = parseHttpMessage(buf);
+    assert.equal(res.body.framing, 'invalid');
+    assert.equal(res.body.declaredLength, null);
+    assert.equal(slice(buf, res.body), 'xyz');
+    assert.match(res.problems.join(), /invalid Content-Length/);
+  });
+}
 
 test('every range points at exactly its own bytes', () => {
   for (const buf of [client.appData, server.appData]) {
@@ -52,6 +88,7 @@ test('chunked bodies are framed as chunked and span the rest of the stream', () 
   const res = parseHttpMessage(buf);
   assert.equal(res.body.framing, 'chunked');
   assert.equal(res.body.declaredLength, null);
+  assert.equal(res.body.complete, null); // unknown until chunks are decoded
   assert.equal(slice(buf, res.body), '5\r\nhello\r\n0\r\n\r\n');
 });
 

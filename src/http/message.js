@@ -31,17 +31,48 @@ export function headerValue(message, name) {
   return message.headers.find((h) => h.name.toLowerCase() === lower)?.value;
 }
 
-function frameBody(kind, message, bodyOffset, available) {
-  const range = { offset: bodyOffset, length: available };
+const DECIMAL = /^\d+$/;
+
+/** Body by Content-Length: never longer than declared; leftovers and shortfalls are reported. */
+function frameByLength(declared, offset, available) {
+  if (!DECIMAL.test(declared)) {
+    return {
+      body: { offset, length: available, framing: 'invalid', declaredLength: null, complete: null },
+      extra: null,
+      problems: [`invalid Content-Length ${JSON.stringify(declared)}`],
+    };
+  }
+  const declaredLength = Number(declared);
+  const length = Math.min(declaredLength, available);
+  const surplus = available - length;
+  const problems = [
+    ...(available < declaredLength ? [`body truncated: ${available} of ${declaredLength} bytes`] : []),
+    ...(surplus > 0 ? [`${surplus} bytes after the declared body`] : []),
+  ];
+  return {
+    body: { offset, length, framing: 'content-length', declaredLength, complete: available >= declaredLength },
+    extra: surplus > 0 ? { offset: offset + length, length: surplus } : null,
+    problems,
+  };
+}
+
+function frameBody(kind, message, offset, available) {
   if (headerValue(message, 'transfer-encoding')?.toLowerCase().includes('chunked')) {
-    return { ...range, framing: 'chunked', declaredLength: null };
+    // Completeness is unknown until the chunks are decoded.
+    return { body: { offset, length: available, framing: 'chunked', declaredLength: null, complete: null }, extra: null, problems: [] };
   }
   const declared = headerValue(message, 'content-length');
-  if (declared !== undefined) return { ...range, framing: 'content-length', declaredLength: Number(declared) };
+  if (declared !== undefined) return frameByLength(declared, offset, available);
   // A request without either header has no body; a response then runs until the connection closes.
-  return kind === 'request'
-    ? { ...range, framing: 'none', declaredLength: 0 }
-    : { ...range, framing: 'close', declaredLength: null };
+  const body = kind === 'request'
+    ? { offset, length: 0, framing: 'none', declaredLength: 0, complete: true }
+    : { offset, length: available, framing: 'close', declaredLength: null, complete: true };
+  const surplus = available - body.length;
+  return {
+    body,
+    extra: surplus > 0 ? { offset: offset + body.length, length: surplus } : null,
+    problems: surplus > 0 ? [`${surplus} bytes after a request without a body`] : [],
+  };
 }
 
 /** Parse one HTTP/1.x message at the start of `buf` (latin1: header bytes map 1:1 to chars). */
@@ -55,5 +86,5 @@ export function parseHttpMessage(buf) {
   const headers = headerText ? parseHeaders(headerText, startEnd + CRLF.length) : [];
   const head = { offset: 0, length: headEnd + HEAD_END.length };
   const message = { kind, startLine: { offset: 0, length: startEnd, ...fields }, headers, head };
-  return { ...message, body: frameBody(kind, message, head.length, buf.length - head.length) };
+  return { ...message, ...frameBody(kind, message, head.length, buf.length - head.length) };
 }
