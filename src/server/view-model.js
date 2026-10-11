@@ -13,6 +13,31 @@ export function eventBytes(timeline) {
   };
 }
 
+const X509_KEYS = Object.freeze(['subject', 'issuer', 'serialNumber', 'validFrom', 'validTo', 'dnsNames', 'signatureAlgorithm', 'publicKey', 'ca', 'fingerprint256']);
+
+/** A field node as the page sees it: allow-listed keys only, recursively. */
+function fieldView(node) {
+  return {
+    name: node.name,
+    offset: node.offset,
+    length: node.length,
+    value: node.value ?? null,
+    label: node.label ?? null,
+    problem: node.problem ?? null,
+    ...(node.x509 ? { x509: Object.fromEntries(X509_KEYS.map((k) => [k, node.x509[k]])) } : {}),
+    children: node.children.map(fieldView),
+  };
+}
+
+/** (index) -> { fields: tree | null }, or undefined when there is no such event. */
+export function eventFields(timeline) {
+  return (index) => {
+    const e = timeline.events[index];
+    if (!e) return undefined;
+    return { fields: e.fields ? fieldView(e.fields) : null };
+  };
+}
+
 export function timelineView(timeline) {
   const events = timeline.events.map(pick);
   return {

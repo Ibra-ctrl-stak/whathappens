@@ -5,7 +5,7 @@ import http from 'node:http';
 import { readFileSync, readdirSync } from 'node:fs';
 import { loadSession } from '../src/session.js';
 import { buildTimeline } from '../src/timeline.js';
-import { timelineView, eventBytes } from '../src/server/view-model.js';
+import { timelineView, eventBytes, eventFields } from '../src/server/view-model.js';
 import { startServer } from '../src/server/server.js';
 
 const golden = JSON.parse(readFileSync(new URL('./fixtures/github-robots/session.json', import.meta.url), 'utf8'));
@@ -14,7 +14,7 @@ const WEB_DIR = new URL('../web/', import.meta.url);
 
 let server;
 before(async () => {
-  server = await startServer({ view: timelineView(timeline), bytesOf: eventBytes(timeline) });
+  server = await startServer({ view: timelineView(timeline), bytesOf: eventBytes(timeline), fieldsOf: eventFields(timeline) });
 });
 after(() => server.close());
 
@@ -161,4 +161,50 @@ test('hex.js is served as JavaScript', async () => {
   const res = await request(`${page()}hex.js`);
   assert.equal(res.status, 200);
   assert.match(res.headers['content-type'], /^text\/javascript/);
+});
+
+const NODE_KEYS = ['children', 'label', 'length', 'name', 'offset', 'problem', 'value'];
+const getJson = async (path) => {
+  const res = await request(path);
+  return { ...res, json: res.status === 200 ? JSON.parse(res.body) : null };
+};
+
+test('events/<i>/fields returns the event\'s field tree with allow-listed keys only', async () => {
+  const i = indexOf((e) => e.kind === 'record');
+  const res = await getJson(`${page()}events/${i}/fields`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers['content-type'], /^application\/json/);
+  const tree = res.json.fields;
+  assert.deepEqual([tree.offset, tree.length], [timeline.events[i].offset, timeline.events[i].length]);
+  const visit = (node) => {
+    assert.deepEqual(Object.keys(node).filter((k) => k !== 'x509').sort(), NODE_KEYS);
+    node.children.forEach(visit);
+  };
+  visit(tree);
+});
+
+test('events/<i>/fields: certificates carry their X.509 summary', async () => {
+  const i = indexOf((e) => e.kind === 'handshake-message' && e.summary === 'Certificate');
+  const { json } = await getJson(`${page()}events/${i}/fields`);
+  const certs = [];
+  const visit = (node) => (node.x509 ? certs.push(node.x509) : node.children.forEach(visit));
+  visit(json.fields);
+  assert.ok(certs.length >= 2);
+  assert.match(certs[0].subject, /CN=github\.com/);
+});
+
+test('events/<i>/fields: an event without a tree answers null explicitly', async () => {
+  const { status, json } = await getJson(`${page()}events/${indexOf((e) => e.layer === 'tcp')}/fields`);
+  assert.equal(status, 200);
+  assert.deepEqual(json, { fields: null });
+});
+
+test('events/<i>/fields: 404 for an index past the last event', async () => {
+  assert.equal((await request(`${page()}events/${timeline.events.length}/fields`)).status, 404);
+});
+
+test('no field tree contains a session secret', () => {
+  const fieldsOf = eventFields(timeline);
+  const all = JSON.stringify(timeline.events.map((_, i) => fieldsOf(i)));
+  for (const line of golden.tls.keylog) assert.ok(!all.includes(line.split(' ')[2]));
 });

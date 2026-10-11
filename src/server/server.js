@@ -38,17 +38,23 @@ function send(res, status, type, body, method) {
   res.end(method === 'HEAD' ? undefined : body);
 }
 
-// events/<index>/bytes with a canonical decimal index (no sign, no leading zeros)
-const EVENT_BYTES = /^events\/(0|[1-9]\d{0,8})\/bytes$/;
+// events/<index>/(bytes|fields) with a canonical decimal index (no sign, no leading zeros)
+const EVENT_ROUTE = /^events\/(0|[1-9]\d{0,8})\/(bytes|fields)$/;
 
-function eventBytesRoute(path, bytesOf) {
-  const match = EVENT_BYTES.exec(path);
-  const bytes = match ? bytesOf(Number(match[1])) : null;
-  return bytes ? { type: 'application/octet-stream', body: bytes } : null;
+function eventRoute(path, { bytesOf, fieldsOf }) {
+  const match = EVENT_ROUTE.exec(path);
+  if (!match) return null;
+  const index = Number(match[1]);
+  if (match[2] === 'bytes') {
+    const bytes = bytesOf(index);
+    return bytes ? { type: 'application/octet-stream', body: bytes } : null;
+  }
+  const fields = fieldsOf(index);
+  return fields ? { type: 'application/json; charset=utf-8', body: Buffer.from(JSON.stringify(fields)) } : null;
 }
 
 /** Decide one request; returns [status, route-or-null]. */
-function check(req, { port, token, table, bytesOf }) {
+function check(req, { port, token, table, sources }) {
   const self = `${HOST}:${port}`;
   if (req.headers.host !== self) return [403, null]; // DNS rebinding: a foreign name pointing at us
   if (req.headers.origin !== undefined && req.headers.origin !== `http://${self}`) return [403, null];
@@ -56,19 +62,21 @@ function check(req, { port, token, table, bytesOf }) {
   const prefix = `/${token}/`;
   if (!req.url.startsWith(prefix)) return [404, null];
   const path = req.url.slice(prefix.length);
-  const route = table.get(path) ?? eventBytesRoute(path, bytesOf);
+  const route = table.get(path) ?? eventRoute(path, sources);
   return route ? [200, route] : [404, null];
 }
 
 /**
- * view: timelineView(...) output; bytesOf: eventBytes(...) — (index) -> Buffer | null.
+ * view: timelineView(...) output; bytesOf: eventBytes(...) — (index) -> Buffer | null;
+ * fieldsOf: eventFields(...) — (index) -> { fields } | undefined.
  * Resolves to { host, port, token, url, close }.
  */
-export function startServer({ view, bytesOf = () => null }) {
+export function startServer({ view, bytesOf = () => null, fieldsOf = () => undefined }) {
   const token = randomBytes(TOKEN_BYTES).toString('base64url');
   const table = routes(view);
+  const sources = { bytesOf, fieldsOf };
   const server = http.createServer((req, res) => {
-    const [status, route] = check(req, { port: server.address().port, token, table, bytesOf });
+    const [status, route] = check(req, { port: server.address().port, token, table, sources });
     if (route) send(res, status, route.type, route.body, req.method);
     else send(res, status, 'text/plain; charset=utf-8', Buffer.from(`${status}\n`), req.method);
   });
