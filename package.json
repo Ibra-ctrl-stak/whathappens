@@ -2,10 +2,11 @@
   "name": "whathappens",
   "version": "0.0.1",
   "private": true,
+  "license": "MIT",
   "description": "Visualizer of your own network traffic: DNS, TCP, TLS, HTTP — byte by byte",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "day1": "node day1.mjs",
