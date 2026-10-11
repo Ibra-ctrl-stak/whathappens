@@ -6,6 +6,8 @@ import { readFileSync } from 'node:fs';
 import { loadSession, sha256 } from '../src/session.js';
 import { buildQuery, parseResponse, TYPE } from '../src/dns/packet.js';
 import { decryptSession } from '../src/tls/decrypt.js';
+import { parseHandshake } from '../src/tls/handshake-fields.js';
+import { find } from '../src/fields.js';
 
 const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/github-robots/${name}`, import.meta.url), 'utf8'));
 const session = loadSession(fixture('session.json'));
@@ -68,4 +70,11 @@ test('TLS: records tile each stream with no gaps or leftovers', () => {
   assert.deepEqual(decrypted.trailingBytes, { client: 0, server: 0 });
 });
 
-test.todo('TLS: SNI and ALPN from ClientHello/EncryptedExtensions match Wireshark (Day 4 field parsers)');
+test('TLS: SNI from ClientHello and ALPN from EncryptedExtensions match Wireshark', () => {
+  const tree = (dir, type) => {
+    const side = decrypted[dir];
+    return parseHandshake(side.handshake, side.messages.find((m) => m.type === type));
+  };
+  assert.equal(find(tree('client', 1), 'host_name').value, expected.tls.sni);
+  assert.equal(find(tree('server', 8), 'protocol_name').value, expected.tls.alpn);
+});
