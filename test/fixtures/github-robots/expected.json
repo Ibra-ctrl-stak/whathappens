@@ -1,0 +1,207 @@
+{
+  "source": "TShark (Wireshark) 4.6.9 (v4.6.9-0-g2d548b197c75). on a capture of session 2026-10-11T17:28:17.509Z",
+  "dns": [
+    {
+      "localPort": 49201,
+      "id": 40879,
+      "qname": "github.com",
+      "authoritative": false,
+      "truncated": false,
+      "rcode": 0,
+      "counts": {
+        "answers": 0,
+        "authority": 13,
+        "additional": 27
+      },
+      "a": [
+        "192.12.94.30",
+        "192.26.92.30",
+        "192.31.80.30",
+        "192.33.14.30",
+        "192.35.51.30",
+        "192.41.162.30",
+        "192.42.93.30",
+        "192.43.172.30",
+        "192.48.79.30",
+        "192.5.6.30",
+        "192.52.178.30",
+        "192.54.112.30",
+        "192.55.83.30"
+      ],
+      "ns": [
+        "a.gtld-servers.net",
+        "b.gtld-servers.net",
+        "c.gtld-servers.net",
+        "d.gtld-servers.net",
+        "e.gtld-servers.net",
+        "f.gtld-servers.net",
+        "g.gtld-servers.net",
+        "h.gtld-servers.net",
+        "i.gtld-servers.net",
+        "j.gtld-servers.net",
+        "k.gtld-servers.net",
+        "l.gtld-servers.net",
+        "m.gtld-servers.net"
+      ]
+    },
+    {
+      "localPort": 49202,
+      "id": 27249,
+      "qname": "github.com",
+      "authoritative": false,
+      "truncated": false,
+      "rcode": 0,
+      "counts": {
+        "answers": 0,
+        "authority": 8,
+        "additional": 3
+      },
+      "a": [
+        "205.251.193.165"
+      ],
+      "ns": [
+        "dns1.p08.nsone.net",
+        "dns2.p08.nsone.net",
+        "dns3.p08.nsone.net",
+        "dns4.p08.nsone.net",
+        "ns-1283.awsdns-32.org",
+        "ns-1707.awsdns-21.co.uk",
+        "ns-421.awsdns-52.com",
+        "ns-520.awsdns-01.net"
+      ]
+    },
+    {
+      "localPort": 49203,
+      "id": 15734,
+      "qname": "github.com",
+      "authoritative": true,
+      "truncated": false,
+      "rcode": 0,
+      "counts": {
+        "answers": 1,
+        "authority": 8,
+        "additional": 1
+      },
+      "a": [
+        "140.82.121.3"
+      ],
+      "ns": [
+        "dns1.p08.nsone.net",
+        "dns2.p08.nsone.net",
+        "dns3.p08.nsone.net",
+        "dns4.p08.nsone.net",
+        "ns-1283.awsdns-32.org",
+        "ns-1707.awsdns-21.co.uk",
+        "ns-421.awsdns-52.com",
+        "ns-520.awsdns-01.net"
+      ]
+    }
+  ],
+  "tls": {
+    "clientRandom": "1329451ced1efce9a819296082de338e0d863b697fd06c68fa16a0330f7630c0",
+    "serverRandom": "92413ef100a163b2f8714b9d6ce83a0e55ddd74f32a3409063e4c80067e58234",
+    "cipherSuite": 4865,
+    "sni": "github.com",
+    "alpn": "http/1.1",
+    "records": {
+      "client": [
+        [
+          22,
+          1480
+        ],
+        [
+          20,
+          1
+        ],
+        [
+          22,
+          53
+        ],
+        [
+          23,
+          126
+        ]
+      ],
+      "server": [
+        [
+          22,
+          122
+        ],
+        [
+          20,
+          1
+        ],
+        [
+          22,
+          42
+        ],
+        [
+          22,
+          2758
+        ],
+        [
+          22,
+          96
+        ],
+        [
+          22,
+          53
+        ],
+        [
+          22,
+          74
+        ],
+        [
+          22,
+          74
+        ],
+        [
+          23,
+          1166
+        ],
+        [
+          23,
+          16401
+        ],
+        [
+          23,
+          372
+        ],
+        [
+          21,
+          19
+        ]
+      ]
+    },
+    "handshakeTypes": {
+      "client": [
+        1,
+        20
+      ],
+      "server": [
+        2,
+        8,
+        11,
+        15,
+        20,
+        4,
+        4
+      ]
+    }
+  },
+  "http": {
+    "request": {
+      "method": "GET",
+      "uri": "/robots.txt",
+      "host": "github.com",
+      "userAgent": "whathappens/0.0.1"
+    },
+    "response": {
+      "code": 200,
+      "phrase": "OK",
+      "contentType": "text/plain",
+      "contentLength": 16739,
+      "bodySha256": "12bc55582b1ddb8eb3300d9cb26b0421c9fc80193fc77e5f04862e934f8097db"
+    }
+  }
+}

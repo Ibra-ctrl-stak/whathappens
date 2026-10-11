@@ -134,30 +134,36 @@ function decryptDirection(records, suite, hsSecret, appSecret) {
   const epochs = { handshake: trafficKeys(suite, hsSecret), application: trafficKeys(suite, appSecret) };
   let epoch = 'handshake';
   let seq = 0;
+  // Handshake messages may span records (and both plaintext and encrypted ones), so one buffer.
   let pendingHandshake = Buffer.alloc(0);
+  let appDataOffset = 0;
   const out = [];
   for (const record of records) {
-    if (record.type !== CONTENT.APP_DATA) {
-      out.push({ offset: record.offset, epoch: 'plaintext', outerType: record.type, length: record.body.length });
-      continue;
-    }
-    const { contentType, content } = decryptRecord(suite, epochs[epoch], seq, record);
-    const entry = { offset: record.offset, epoch, seq, outerType: record.type, contentType, content };
-    seq += 1;
-    if (epoch === 'handshake' && contentType === CONTENT.HANDSHAKE) {
-      const { messages, rest } = takeHandshakeMessages(Buffer.concat([pendingHandshake, content]));
+    // `length` is always the outer record body length, as on the wire.
+    const entry =
+      record.type === CONTENT.APP_DATA
+        ? { offset: record.offset, epoch, seq, outerType: record.type, length: record.body.length,
+            ...decryptRecord(suite, epochs[epoch], seq, record) }
+        : { offset: record.offset, epoch: 'plaintext', outerType: record.type, length: record.body.length,
+            contentType: record.type, content: record.body };
+    if (entry.epoch !== 'plaintext') seq += 1;
+
+    if (entry.contentType === CONTENT.HANDSHAKE) {
+      const { messages, rest } = takeHandshakeMessages(Buffer.concat([pendingHandshake, entry.content]));
       pendingHandshake = rest;
       entry.handshakeTypes = messages.map((m) => m.type);
-      if (messages.some((m) => m.type === HANDSHAKE.FINISHED)) {
+      if (entry.epoch === 'handshake' && messages.some((m) => m.type === HANDSHAKE.FINISHED)) {
         epoch = 'application';
         seq = 0;
       }
     }
+    if (entry.epoch === 'application' && entry.contentType === CONTENT.APP_DATA) {
+      entry.appDataOffset = appDataOffset; // where this record's plaintext sits in appData
+      appDataOffset += entry.content.length;
+    }
     out.push(entry);
   }
-  const appData = Buffer.concat(
-    out.filter((e) => e.epoch === 'application' && e.contentType === CONTENT.APP_DATA).map((e) => e.content),
-  );
+  const appData = Buffer.concat(out.filter((e) => e.appDataOffset !== undefined).map((e) => e.content));
   return { records: out, appData };
 }
 
@@ -189,6 +195,7 @@ export function decryptSession({ raw, keylog }) {
   return {
     suite: { id: suiteId, ...suite },
     clientRandom,
+    serverRandom: serverHello.random,
     trailingBytes: { client: client.trailing, server: server.trailing },
     client: decryptDirection(
       client.records,
