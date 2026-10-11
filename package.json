@@ -1,0 +1,15 @@
+{
+  "name": "whathappens",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Visualizer of your own network traffic: DNS, TCP, TLS, HTTP — byte by byte",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "day1": "node day1.mjs",
+    "compare": "node compare-wireshark.mjs",
+    "test": "node --test"
+  }
+}

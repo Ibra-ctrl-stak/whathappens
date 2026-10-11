@@ -1,0 +1,6 @@
+node_modules/
+# Captures and session keys: per-run artifacts, never commit
+out/
+*.pcap
+*.pcapng
+*.etl
