@@ -33,6 +33,24 @@ export function buildQuery({ id, name, type = TYPE.A }) {
   return Buffer.concat([header, encodeName(name), question, opt]);
 }
 
+const DOT = 0x2e;
+const BACKSLASH = 0x5c;
+
+/**
+ * Label bytes -> presentation format (RFC 1035 §5.1): "." and "\" are backslash-escaped,
+ * bytes outside printable ASCII become \DDD. Names from the network can then never carry
+ * terminal escapes or markup, and a dot inside a label cannot fake a label boundary.
+ */
+function escapeLabel(bytes) {
+  return [...bytes]
+    .map((b) => {
+      if (b === DOT || b === BACKSLASH) return `\\${String.fromCharCode(b)}`;
+      if (b < 0x21 || b > 0x7e) return `\\${String(b).padStart(3, '0')}`;
+      return String.fromCharCode(b);
+    })
+    .join('');
+}
+
 function readName(buf, offset) {
   const labels = [];
   let pos = offset;
@@ -49,7 +67,7 @@ function readName(buf, offset) {
       jumps += 1;
       continue;
     }
-    labels.push(buf.toString('ascii', pos + 1, pos + 1 + len));
+    labels.push(escapeLabel(buf.subarray(pos + 1, pos + 1 + len)));
     pos += 1 + len;
   }
   throw new Error('DNS name compression loop');
@@ -96,6 +114,29 @@ function readSection(buf, offset, count) {
     pos = next;
   }
   return { records, next: pos };
+}
+
+function readQuestion(buf) {
+  if (buf.length < 12 || buf.readUInt16BE(4) !== 1) return null;
+  const { name, next } = readName(buf, 12);
+  if (next + 4 > buf.length) return null;
+  return { name: name.toLowerCase(), type: buf.readUInt16BE(next), klass: buf.readUInt16BE(next + 2) };
+}
+
+/**
+ * Is `response` an answer to `query`? Same transaction id, QR bit set, and the very same
+ * question (name compared case-insensitively). Anything malformed is simply "not an answer".
+ */
+export function isAnswerTo(query, response) {
+  try {
+    if (response.length < 12 || response.readUInt16BE(0) !== query.readUInt16BE(0)) return false;
+    if (!(response.readUInt16BE(2) & 0x8000)) return false;
+    const asked = readQuestion(query);
+    const answered = readQuestion(response);
+    return Boolean(asked && answered) && asked.name === answered.name && asked.type === answered.type && asked.klass === answered.klass;
+  } catch {
+    return false; // undecodable question section
+  }
 }
 
 export function parseResponse(buf) {

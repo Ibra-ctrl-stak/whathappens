@@ -1,7 +1,7 @@
 // Iterative resolver: root -> TLD -> authoritative, over raw UDP sockets (no dns.lookup).
 import dgram from 'node:dgram';
 import { randomInt } from 'node:crypto';
-import { buildQuery, parseResponse, TYPE } from './packet.js';
+import { buildQuery, parseResponse, isAnswerTo, TYPE } from './packet.js';
 import { nowMs } from '../clock.js';
 
 // IANA root hints (named.root), IPv4 only.
@@ -20,8 +20,13 @@ const MAX_REFERRALS = 16;
 const MAX_NS_DEPTH = 4;
 const ATTEMPTS_PER_SERVER = 2;
 
-/** One UDP request/response, with the exact bytes on both sides. */
-export function exchange(server, query, id) {
+/**
+ * One UDP request/response, with the exact bytes on both sides. Only a datagram from the
+ * server's own address and port that answers this very question ends the wait; anything else
+ * (spoofed, stale, or malformed) is ignored. server.port is for loopback tests; default 53.
+ */
+export function exchange(server, query) {
+  const port = server.port ?? DNS_PORT;
   return new Promise((resolve, reject) => {
     const socket = dgram.createSocket('udp4');
     let sentAt = null;
@@ -39,7 +44,7 @@ export function exchange(server, query, id) {
       reject(fail(err));
     });
     socket.on('message', (msg, rinfo) => {
-      if (rinfo.address !== server.ip || msg.length < 2 || msg.readUInt16BE(0) !== id) return;
+      if (rinfo.address !== server.ip || rinfo.port !== port || !isAnswerTo(query, msg)) return;
       const receivedAt = nowMs();
       clearTimeout(timer);
       socket.close();
@@ -48,7 +53,7 @@ export function exchange(server, query, id) {
     socket.bind(0, () => {
       localPort = socket.address().port;
       sentAt = nowMs();
-      socket.send(query, DNS_PORT, server.ip);
+      socket.send(query, port, server.ip);
     });
   });
 }
@@ -58,7 +63,7 @@ async function askOnce(server, name, onExchange) {
   const query = buildQuery({ id, name, type: TYPE.A });
   let result;
   try {
-    result = await exchange(server, query, id);
+    result = await exchange(server, query);
   } catch (err) {
     const { sentAt = null, localPort = null, failedAt = null } = err;
     onExchange({ server, localPort, qname: name, query, response: null, sentAt, receivedAt: null, failedAt, error: err.message, parsed: null });
