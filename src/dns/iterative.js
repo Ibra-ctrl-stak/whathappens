@@ -19,6 +19,23 @@ const QUERY_TIMEOUT_MS = 2500;
 const MAX_REFERRALS = 16;
 const MAX_NS_DEPTH = 4;
 const ATTEMPTS_PER_SERVER = 2;
+// Limits for one whole resolution (nameserver lookups and retries included), so a broken or
+// hostile zone cannot make us loop or fan out: CNAME loops across responses, 50 unglued NS...
+export const MAX_QUERIES = 40;
+const MAX_CNAME_HOPS = 8;
+const MAX_UNGLUED_TRIED = 4;
+
+/** Thrown when a limit is hit; never swallowed by the retry/fallback logic. */
+class BudgetExhausted extends Error {}
+
+const rethrowIfBudget = (err) => {
+  if (err instanceof BudgetExhausted) throw err;
+};
+
+function spend(budget, kind, what) {
+  if (budget[kind] <= 0) throw new BudgetExhausted(what);
+  budget[kind] -= 1; // shared, deliberately mutable counter for the whole resolution
+}
 
 /**
  * One UDP request/response, with the exact bytes on both sides. Only a datagram from the
@@ -58,30 +75,32 @@ export function exchange(server, query) {
   });
 }
 
-async function askOnce(server, name, onExchange) {
+async function askOnce(server, name, ctx) {
   const id = randomInt(0, 0x10000);
   const query = buildQuery({ id, name, type: TYPE.A });
+  spend(ctx.budget, 'queries', `query budget of ${MAX_QUERIES} exhausted while asking for ${name}`);
   let result;
   try {
-    result = await exchange(server, query);
+    result = await ctx.transport(server, query);
   } catch (err) {
     const { sentAt = null, localPort = null, failedAt = null } = err;
-    onExchange({ server, localPort, qname: name, query, response: null, sentAt, receivedAt: null, failedAt, error: err.message, parsed: null });
+    ctx.onExchange({ server, localPort, qname: name, query, response: null, sentAt, receivedAt: null, failedAt, error: err.message, parsed: null });
     throw err;
   }
   const { response, localPort, sentAt, receivedAt } = result;
   const parsed = parseResponse(response);
-  onExchange({ server, localPort, qname: name, query, response, sentAt, receivedAt, rttMs: receivedAt - sentAt, parsed });
+  ctx.onExchange({ server, localPort, qname: name, query, response, sentAt, receivedAt, rttMs: receivedAt - sentAt, parsed });
   return parsed;
 }
 
 /** Try each server; UDP datagrams get lost, so every server gets a second chance. */
-async function askAny(servers, name, onExchange, errors = []) {
+async function askAny(servers, name, ctx, errors = []) {
   for (let attempt = 0; attempt < ATTEMPTS_PER_SERVER; attempt += 1) {
     for (const server of servers) {
       try {
-        return await askOnce(server, name, onExchange);
+        return await askOnce(server, name, ctx);
       } catch (err) {
+        rethrowIfBudget(err);
         errors.push(err.message);
       }
     }
@@ -90,21 +109,22 @@ async function askAny(servers, name, onExchange, errors = []) {
 }
 
 /** Glued nameservers first; if all of them stay silent, resolve the unglued NS names. */
-async function askDelegation({ glue, unglued }, name, onExchange, depth) {
+async function askDelegation({ glue, unglued }, name, ctx, depth) {
   const errors = [];
   if (glue.length > 0) {
     try {
-      return await askAny(glue, name, onExchange, errors);
-    } catch {
-      // fall through to unglued nameservers
+      return await askAny(glue, name, ctx, errors);
+    } catch (err) {
+      rethrowIfBudget(err); // otherwise fall through to unglued nameservers
     }
   }
   if (depth >= MAX_NS_DEPTH) throw new Error('nameserver resolution nested too deep');
-  for (const nsName of unglued) {
+  for (const nsName of unglued.slice(0, MAX_UNGLUED_TRIED)) {
     try {
-      const ips = await resolveA(nsName, { onExchange, depth: depth + 1 });
-      return await askAny(ips.map((ip) => ({ name: nsName, ip })), name, onExchange, errors);
+      const ips = await resolveWith(nsName, ctx, depth + 1);
+      return await askAny(ips.map((ip) => ({ name: nsName, ip })), name, ctx, errors);
     } catch (err) {
+      rethrowIfBudget(err);
       errors.push(`${nsName}: ${err.message}`);
     }
   }
@@ -134,20 +154,29 @@ function delegation(resp) {
   return { glue, unglued: nsNames.filter((n) => !glued.has(n)) };
 }
 
-/**
- * Resolve an A record iteratively starting from the root servers.
- * Every UDP exchange is reported via onExchange (exact query/response bytes).
- */
-export async function resolveA(name, { onExchange = () => {}, depth = 0 } = {}) {
+async function resolveWith(name, ctx, depth) {
   const qname = name.toLowerCase().replace(/\.$/, '');
   let servers = { glue: ROOT_SERVERS, unglued: [] };
   for (let step = 0; step < MAX_REFERRALS; step += 1) {
-    const resp = await askDelegation(servers, qname, onExchange, depth);
+    const resp = await askDelegation(servers, qname, ctx, depth);
     if (resp.rcode !== 0) throw new Error(`rcode ${resp.rcode} for ${qname}`);
     const { ips, cname } = followAnswer(resp.answers, qname);
     if (ips.length > 0) return ips;
-    if (cname) return resolveA(cname, { onExchange, depth });
+    if (cname) {
+      spend(ctx.budget, 'cnameHops', `CNAME chain longer than ${MAX_CNAME_HOPS} hops at ${qname}`);
+      return resolveWith(cname, ctx, depth);
+    }
     servers = delegation(resp);
   }
   throw new Error(`too many referrals for ${qname}`);
+}
+
+/**
+ * Resolve an A record iteratively starting from the root servers.
+ * Every UDP exchange is reported via onExchange (exact query/response bytes).
+ * transport(server, query) defaults to real UDP; tests pass an in-memory one.
+ */
+export async function resolveA(name, { onExchange = () => {}, transport = exchange } = {}) {
+  const budget = { queries: MAX_QUERIES, cnameHops: MAX_CNAME_HOPS };
+  return resolveWith(name, { onExchange, transport, budget }, 0);
 }
