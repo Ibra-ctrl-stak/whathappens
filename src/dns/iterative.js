@@ -2,6 +2,7 @@
 import dgram from 'node:dgram';
 import { randomInt } from 'node:crypto';
 import { buildQuery, parseResponse, TYPE } from './packet.js';
+import { nowMs } from '../clock.js';
 
 // IANA root hints (named.root), IPv4 only.
 export const ROOT_SERVERS = Object.freeze([
@@ -23,34 +24,49 @@ const ATTEMPTS_PER_SERVER = 2;
 export function exchange(server, query, id) {
   return new Promise((resolve, reject) => {
     const socket = dgram.createSocket('udp4');
-    const startedAt = performance.now();
+    let sentAt = null;
+    let localPort = null;
+    // Failures carry what did happen on the wire, so a lost datagram still shows up in the record.
+    const fail = (err) => Object.assign(err, { sentAt, localPort, failedAt: nowMs() });
     const timer = setTimeout(() => {
       socket.close();
-      reject(new Error(`timeout ${QUERY_TIMEOUT_MS}ms from ${server.name} (${server.ip})`));
+      reject(fail(new Error(`timeout ${QUERY_TIMEOUT_MS}ms from ${server.name} (${server.ip})`)));
     }, QUERY_TIMEOUT_MS);
 
     socket.on('error', (err) => {
       clearTimeout(timer);
       socket.close();
-      reject(err);
+      reject(fail(err));
     });
     socket.on('message', (msg, rinfo) => {
       if (rinfo.address !== server.ip || msg.length < 2 || msg.readUInt16BE(0) !== id) return;
+      const receivedAt = nowMs();
       clearTimeout(timer);
-      const localPort = socket.address().port;
       socket.close();
-      resolve({ response: msg, localPort, rttMs: performance.now() - startedAt });
+      resolve({ response: msg, localPort, sentAt, receivedAt });
     });
-    socket.bind(0, () => socket.send(query, DNS_PORT, server.ip));
+    socket.bind(0, () => {
+      localPort = socket.address().port;
+      sentAt = nowMs();
+      socket.send(query, DNS_PORT, server.ip);
+    });
   });
 }
 
 async function askOnce(server, name, onExchange) {
   const id = randomInt(0, 0x10000);
   const query = buildQuery({ id, name, type: TYPE.A });
-  const { response, localPort, rttMs } = await exchange(server, query, id);
+  let result;
+  try {
+    result = await exchange(server, query, id);
+  } catch (err) {
+    const { sentAt = null, localPort = null, failedAt = null } = err;
+    onExchange({ server, localPort, qname: name, query, response: null, sentAt, receivedAt: null, failedAt, error: err.message, parsed: null });
+    throw err;
+  }
+  const { response, localPort, sentAt, receivedAt } = result;
   const parsed = parseResponse(response);
-  onExchange({ server, localPort, qname: name, query, response, rttMs, parsed });
+  onExchange({ server, localPort, qname: name, query, response, sentAt, receivedAt, rttMs: receivedAt - sentAt, parsed });
   return parsed;
 }
 

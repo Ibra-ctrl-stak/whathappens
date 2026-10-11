@@ -3,6 +3,7 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import { Duplex } from 'node:stream';
+import { nowMs } from '../clock.js';
 
 const HTTPS_PORT = 443;
 const SESSION_TIMEOUT_MS = 30000;
@@ -55,15 +56,19 @@ function connectTcp(ip, port) {
  * Returns the raw wire chunks, the session keylog lines and the decrypted plaintext as seen by Node.
  */
 export async function recordHttpsGet({ ip, servername, path = '/' }) {
-  const startedAt = performance.now();
   const raw = [];
   const keylog = [];
   const sentChunks = [];
   const receivedChunks = [];
-  const record = (dir, chunk) =>
-    raw.push({ dir, t: performance.now() - startedAt, bytes: Buffer.from(chunk) });
+  const record = (dir, chunk) => raw.push({ dir, at: nowMs(), bytes: Buffer.from(chunk) });
+  // Moments the OS reports to us; SYN/ACK/FIN segments themselves are not visible from Node.
+  const times = { connectStartedAt: nowMs(), connectedAt: null, secureAt: null, closedAt: null };
 
   const tcp = await connectTcp(ip, HTTPS_PORT);
+  times.connectedAt = nowMs();
+  tcp.once('close', () => {
+    times.closedAt = nowMs();
+  });
   const local = { address: tcp.localAddress, port: tcp.localPort };
   const proxy = new RecordingDuplex(tcp, record);
 
@@ -81,6 +86,7 @@ export async function recordHttpsGet({ ip, servername, path = '/' }) {
     let info = null;
     secure.on('keylog', (line) => keylog.push(line.toString('ascii').trim()));
     secure.once('secureConnect', () => {
+      times.secureAt = nowMs();
       info = {
         protocol: secure.getProtocol(),
         cipher: secure.getCipher(),
@@ -110,9 +116,11 @@ export async function recordHttpsGet({ ip, servername, path = '/' }) {
 
   return {
     ip,
+    port: HTTPS_PORT,
     servername,
     local,
     tls: tlsInfo,
+    times,
     raw,
     keylog,
     plaintext: { sent: Buffer.concat(sentChunks), received: Buffer.concat(receivedChunks) },

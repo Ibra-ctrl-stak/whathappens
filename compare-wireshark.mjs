@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { decryptSession } from './src/tls/decrypt.js';
+import { loadSession } from './src/session.js';
 
 const run = promisify(execFile);
 const CAPTURE = process.argv[2] ?? fileURLToPath(new URL('./out/capture.pcapng', import.meta.url));
@@ -64,6 +65,13 @@ async function compareDns(dns) {
     const query = packets.find((p) => p.dst === e.server.ip && p.sport === e.localPort && p.dport === 53);
     const response = packets.find((p) => p.src === e.server.ip && p.dport === e.localPort && p.sport === 53);
     const tag = `#${i + 1} ${e.server.name} :${e.localPort}`;
+    if (e.response === null) {
+      // Recorded as lost: the query must be on the wire and no answer may have arrived.
+      return [
+        query ? compareBytes(`${tag} query`, e.query, query.payload) : check(`${tag} query`, false, 'not in capture'),
+        check(`${tag} no response in capture either`, !response, response ? 'capture has one' : `recorded: ${e.error}`),
+      ];
+    }
     return [
       query ? compareBytes(`${tag} query`, Buffer.from(e.queryHex, 'hex'), query.payload) : check(`${tag} query`, false, 'not in capture'),
       response
@@ -103,7 +111,7 @@ async function compareTls(tls) {
   if (streamId === undefined) return [check('TCP stream found in capture', false)];
 
   const wire = orient(parseFollowRaw(await tshark(['-q', '-z', `follow,tcp,raw,${streamId}`])), tls.local.port);
-  const raw = tls.raw.map((c) => ({ dir: c.dir, bytes: Buffer.from(c.hex, 'hex') }));
+  const { raw } = tls;
   const ours = {
     client: Buffer.concat(raw.filter((c) => c.dir === 'out').map((c) => c.bytes)),
     server: Buffer.concat(raw.filter((c) => c.dir === 'in').map((c) => c.bytes)),
@@ -143,7 +151,7 @@ async function compareTls(tls) {
 
 async function main() {
   if (!existsSync(CAPTURE)) throw new Error(`capture not found: ${CAPTURE}`);
-  const session = JSON.parse(await readFile(SESSION, 'utf8'));
+  const session = loadSession(JSON.parse(await readFile(SESSION, 'utf8')));
   console.log(`session ${session.startedAt}, capture ${CAPTURE}`);
   const results = [...(await compareDns(session.dns)), ...(await compareTls(session.tls))];
   const ok = results.every(Boolean);

@@ -4,6 +4,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { resolveA } from './src/dns/iterative.js';
 import { recordHttpsGet } from './src/tls/recorder.js';
 import { decryptSession } from './src/tls/decrypt.js';
+import { serializeSession } from './src/session.js';
+import { nowMs } from './src/clock.js';
 
 const HOST = 'github.com';
 const PATH = process.argv[2] ?? '/robots.txt';
@@ -24,13 +26,17 @@ function describeRecord(r) {
 }
 
 async function main() {
-  const startedAt = new Date().toISOString();
+  const startedAt = nowMs();
 
   console.log(`\n[1] Iterative DNS: A ${HOST}`);
   const dns = [];
   const ips = await resolveA(HOST, {
     onExchange: (e) => {
       dns.push(e);
+      if (e.error) {
+        console.log(`  ${e.server.name} (${e.server.ip}) :${e.localPort}  LOST — ${e.error}, retrying`);
+        return;
+      }
       const ns = e.parsed.authority.filter((r) => r.typeName === 'NS').map((r) => r.data);
       const what = e.parsed.answers.length
         ? `answer: ${e.parsed.answers.map((r) => `${r.typeName} ${r.data}`).join(', ')}`
@@ -76,32 +82,8 @@ async function main() {
 
   await mkdir(OUT_DIR, { recursive: true });
   await writeFile(new URL('keylog.txt', OUT_DIR), `${session.keylog.join('\n')}\n`);
-  await writeFile(
-    new URL('session.json', OUT_DIR),
-    JSON.stringify(
-      {
-        startedAt,
-        host: HOST,
-        path: PATH,
-        dns: dns.map((e) => ({
-          server: e.server,
-          localPort: e.localPort,
-          qname: e.qname,
-          queryHex: e.query.toString('hex'),
-          responseHex: e.response.toString('hex'),
-        })),
-        tls: {
-          ip,
-          local: session.local,
-          info: session.tls,
-          raw: session.raw.map((c) => ({ dir: c.dir, t: Math.round(c.t * 1000) / 1000, hex: c.bytes.toString('hex') })),
-          keylog: session.keylog,
-        },
-      },
-      null,
-      2,
-    ),
-  );
+  const saved = serializeSession({ startedAt, host: HOST, path: PATH, dns, tls: session });
+  await writeFile(new URL('session.json', OUT_DIR), `${JSON.stringify(saved, null, 2)}\n`);
   console.log('\n  saved out/session.json, out/keylog.txt');
 
   const alive = results.every(Boolean);
