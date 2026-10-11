@@ -4,3 +4,10 @@ out/
 *.pcap
 *.pcapng
 *.etl
+# TLS secrets and recordings anywhere in the tree (only the documented test fixture is allowed)
+*keylog*
+sslkeys*
+*.keys
+.env*
+session*.json
+!test/fixtures/**/session.json
