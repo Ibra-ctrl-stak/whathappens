@@ -31,9 +31,18 @@ function serverHello(c) {
 
 const raw = (c) => (c.left > 0 ? [c.bytes('body', c.left)] : []);
 
+const newSessionTicket = (c) => [
+  c.uint('ticket_lifetime', 4),
+  c.uint('ticket_age_add', 4),
+  c.opaque('ticket_nonce', 1),
+  c.opaque('ticket', 2, () => null), // opaque to the client by design
+  extensions(c, 'new_session_ticket'),
+];
+
 const BODIES = Object.freeze({
   1: clientHello,
   2: serverHello,
+  4: newSessionTicket,
   8: (c) => [extensions(c, 'encrypted_extensions')],
   11: certificateBody,
   15: (c) => [c.uint('algorithm', 2, SIGNATURE_SCHEMES), c.opaque('signature', 2)],
