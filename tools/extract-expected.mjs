@@ -99,11 +99,81 @@ async function httpExpected() {
   };
 }
 
+/** One tshark field across all matching frames, as a flat list ('|' aggregator: values may contain commas). */
+async function column(filter, name) {
+  const { stdout } = await run(
+    TSHARK,
+    ['-r', capture, ...TLS_OPTS, '-Y', filter, '-T', 'fields', '-E', 'occurrence=a', '-E', 'aggregator=|', '-e', name],
+    { maxBuffer: 64 * 1024 * 1024 },
+  );
+  return stdout.split(/\r?\n/).filter(Boolean).flatMap((line) => line.split('|'));
+}
+
+const hexNum = (s) => Number.parseInt(s, 16);
+const stripCrlf = (line) => line.replace(/\\r\\n$/, ''); // tshark prints the CRLF as the text "\r\n"
+const normSerial = (s) => s.replace(/^(00)+/, '').toLowerCase();
+
+/** Day 4 fields. Only per-message-unambiguous tshark fields: ServerHello and EE share a frame. */
+async function handshakeFieldsExpected() {
+  const port = session.tls.local.port;
+  const on = (type) => `tcp.port == ${port} && tls.handshake.type == ${type}`;
+  const [ch] = await fields(on(1), [
+    'tls.handshake.extensions_server_name', 'tls.handshake.extensions_alpn_str', 'tls.handshake.extensions.supported_version',
+    'tls.handshake.extensions_key_share_group', 'tls.handshake.extensions_key_share_key_exchange_length', 'tls.handshake.extension.type',
+  ], TLS_OPTS);
+  const [sh] = await fields(on(2), ['tls.handshake.extensions.supported_version', 'tls.handshake.extensions_key_share_group',
+    'tls.handshake.extensions_key_share_key_exchange_length'], TLS_OPTS);
+  const ders = await column(on(11), 'tls.handshake.certificate');
+  const serials = await column(on(11), 'x509af.serialNumber');
+  const times = await column(on(11), 'x509af.utcTime');
+  const keyGroups = nums(ch['tls.handshake.extensions_key_share_group']);
+  const keyLengths = nums(ch['tls.handshake.extensions_key_share_key_exchange_length']);
+  const tickets = await fields(on(4), ['tls.handshake.session_ticket_lifetime_hint', 'tls.handshake.session_ticket_age_add',
+    'tls.handshake.session_ticket_nonce', 'tls.handshake.session_ticket_length'], TLS_OPTS);
+  return {
+    clientHello: {
+      sni: ch['tls.handshake.extensions_server_name'],
+      alpn: list(ch['tls.handshake.extensions_alpn_str']),
+      supportedVersions: list(ch['tls.handshake.extensions.supported_version']).map(hexNum),
+      keyShare: keyGroups.map((group, i) => ({ group, keyLength: keyLengths[i] })),
+      extensionTypes: nums(ch['tls.handshake.extension.type']),
+    },
+    serverHello: {
+      supportedVersion: hexNum(sh['tls.handshake.extensions.supported_version']),
+      keyShare: { group: Number(sh['tls.handshake.extensions_key_share_group']), keyLength: Number(sh['tls.handshake.extensions_key_share_key_exchange_length']) },
+    },
+    encryptedExtensions: { alpn: (await column(on(8), 'tls.handshake.extensions_alpn_str'))[0] },
+    certificates: ders.map((der, i) => ({
+      length: der.length / 2,
+      derSha256: createHash('sha256').update(Buffer.from(der, 'hex')).digest('hex'),
+      serial: normSerial(serials[i]),
+      notBefore: times[2 * i],
+      notAfter: times[2 * i + 1],
+    })),
+    leafDnsNames: await column(on(11), 'x509ce.dNSName'),
+    certificateVerifyScheme: hexNum((await column(on(15), 'tls.handshake.sig_hash_alg'))[0]),
+    newSessionTickets: tickets.map((t) => ({
+      lifetime: Number(t['tls.handshake.session_ticket_lifetime_hint']),
+      ageAdd: Number(t['tls.handshake.session_ticket_age_add']),
+      nonce: t['tls.handshake.session_ticket_nonce'],
+      ticketLength: Number(t['tls.handshake.session_ticket_length']),
+    })),
+  };
+}
+
+async function headerLinesExpected() {
+  const port = session.tls.local.port;
+  return {
+    request: (await column(`tcp.port == ${port} && http.request`, 'http.request.line')).map(stripCrlf),
+    response: (await column(`tcp.port == ${port} && http.response`, 'http.response.line')).map(stripCrlf),
+  };
+}
+
 const { stdout: version } = await run(TSHARK, ['--version']);
 const expected = {
   source: `${version.split(/\r?\n/)[0]} on a capture of session ${session.startedAt}`,
   dns: await dnsExpected(),
-  tls: await tlsExpected(),
-  http: await httpExpected(),
+  tls: { ...(await tlsExpected()), ...(await handshakeFieldsExpected()) },
+  http: { ...(await httpExpected()), headerLines: await headerLinesExpected() },
 };
 process.stdout.write(`${JSON.stringify(expected, null, 2)}\n`);

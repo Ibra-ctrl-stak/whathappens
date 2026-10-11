@@ -88,7 +88,7 @@ test('DNS: one query and one response event per answered exchange, carrying the 
   const recordedOn = (e) => sessionJson.dns.find((d) => d.localPort === e.detail.localPort);
   for (const q of queries) assert.equal(bytesOf(q).toString('hex'), recordedOn(q).queryHex);
   for (const r of responses) assert.equal(bytesOf(r).toString('hex'), recordedOn(r).responseHex);
-  assert.match(responses.at(-1).summary, /140\.82\.121\.3/);
+  assert.ok(responses.at(-1).summary.includes(`A ${expected.dns.at(-1).a[0]}`), responses.at(-1).summary);
 });
 
 test('HTTP: request head and response body point at the decrypted bytes', () => {

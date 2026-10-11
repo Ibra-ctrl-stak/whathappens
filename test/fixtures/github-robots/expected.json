@@ -1,9 +1,9 @@
 {
-  "source": "TShark (Wireshark) 4.6.9 (v4.6.9-0-g2d548b197c75). on a capture of session 2026-10-11T17:28:17.509Z",
+  "source": "TShark (Wireshark) 4.6.9 (v4.6.9-0-g2d548b197c75). on a capture of session 2026-10-11T18:00:00.140Z",
   "dns": [
     {
-      "localPort": 49201,
-      "id": 40879,
+      "localPort": 65347,
+      "id": 36476,
       "qname": "github.com",
       "authoritative": false,
       "truncated": false,
@@ -45,8 +45,8 @@
       ]
     },
     {
-      "localPort": 49202,
-      "id": 27249,
+      "localPort": 65348,
+      "id": 58328,
       "qname": "github.com",
       "authoritative": false,
       "truncated": false,
@@ -71,8 +71,8 @@
       ]
     },
     {
-      "localPort": 49203,
-      "id": 15734,
+      "localPort": 65349,
+      "id": 57236,
       "qname": "github.com",
       "authoritative": true,
       "truncated": false,
@@ -83,7 +83,7 @@
         "additional": 1
       },
       "a": [
-        "140.82.121.3"
+        "140.82.121.4"
       ],
       "ns": [
         "dns1.p08.nsone.net",
@@ -98,8 +98,8 @@
     }
   ],
   "tls": {
-    "clientRandom": "1329451ced1efce9a819296082de338e0d863b697fd06c68fa16a0330f7630c0",
-    "serverRandom": "92413ef100a163b2f8714b9d6ce83a0e55ddd74f32a3409063e4c80067e58234",
+    "clientRandom": "0fd388cbff1ca7e11bd618ba0d1c9872c82a6ddc4337b255cd89f3f3e6c6b589",
+    "serverRandom": "eb2973ac3c28d288db0789f2928ac1e3592d27fb7572586e17b2a0c3bfa83c64",
     "cipherSuite": 4865,
     "sni": "github.com",
     "alpn": "http/1.1",
@@ -157,7 +157,7 @@
         ],
         [
           23,
-          1166
+          1159
         ],
         [
           23,
@@ -187,7 +187,91 @@
         4,
         4
       ]
-    }
+    },
+    "clientHello": {
+      "sni": "github.com",
+      "alpn": [
+        "http/1.1"
+      ],
+      "supportedVersions": [
+        772
+      ],
+      "keyShare": [
+        {
+          "group": 4588,
+          "keyLength": 1216
+        },
+        {
+          "group": 29,
+          "keyLength": 32
+        }
+      ],
+      "extensionTypes": [
+        0,
+        11,
+        10,
+        35,
+        16,
+        22,
+        23,
+        13,
+        43,
+        45,
+        51
+      ]
+    },
+    "serverHello": {
+      "supportedVersion": 772,
+      "keyShare": {
+        "group": 29,
+        "keyLength": 32
+      }
+    },
+    "encryptedExtensions": {
+      "alpn": "http/1.1"
+    },
+    "certificates": [
+      {
+        "length": 1009,
+        "derSha256": "46b601ee08b418cf8a3a1ebfe670ba5ce43bb05a917fa8b2dd087a30471cfc63",
+        "serial": "a59ebdb596751db7f5c095079613953c",
+        "notBefore": "2026-09-01 00:00:00 (UTC)",
+        "notAfter": "2026-11-29 23:59:59 (UTC)"
+      },
+      {
+        "length": 867,
+        "derSha256": "873f0ba80e3ac222656dfd04158cc15c2927d42d5d05f01dee4a47eb43a916df",
+        "serial": "36e059ed888dd57aedd570b6727f9bda",
+        "notBefore": "2021-03-22 00:00:00 (UTC)",
+        "notAfter": "2036-03-21 23:59:59 (UTC)"
+      },
+      {
+        "length": 842,
+        "derSha256": "ea6b89ed6907a209ff9188676fb164e7aced894b8996dfbe5ce5bbcc22de4ddd",
+        "serial": "1a9eafec6de8e19b5c193141b68d90dd",
+        "notBefore": "2021-03-22 00:00:00 (UTC)",
+        "notAfter": "2038-01-18 23:59:59 (UTC)"
+      }
+    ],
+    "leafDnsNames": [
+      "github.com",
+      "www.github.com"
+    ],
+    "certificateVerifyScheme": 1027,
+    "newSessionTickets": [
+      {
+        "lifetime": 7200,
+        "ageAdd": 3744708131,
+        "nonce": "0000000000000000",
+        "ticketLength": 32
+      },
+      {
+        "lifetime": 7200,
+        "ageAdd": 1478030489,
+        "nonce": "0000000000000001",
+        "ticketLength": 32
+      }
+    ]
   },
   "http": {
     "request": {
@@ -202,6 +286,32 @@
       "contentType": "text/plain",
       "contentLength": 16739,
       "bodySha256": "12bc55582b1ddb8eb3300d9cb26b0421c9fc80193fc77e5f04862e934f8097db"
+    },
+    "headerLines": {
+      "request": [
+        "Host: github.com",
+        "User-Agent: whathappens/0.0.1",
+        "Accept: */*",
+        "Connection: close"
+      ],
+      "response": [
+        "Date: Sun, 11 Oct 2026 17:59:59 GMT",
+        "Content-Type: text/plain",
+        "Last-Modified: Sat, 10 Oct 2026 23:38:52 GMT",
+        "ETag: W/\"6acacc8c-4163\"",
+        "Vary: Accept-Encoding, Accept, X-Requested-With",
+        "Server: github.com",
+        "X-Frame-Options: DENY",
+        "Strict-Transport-Security: max-age=31536000; includeSubDomains; preload",
+        "Accept-Ranges: bytes",
+        "Set-Cookie: _gh_sess=m36kA%2BWcXR7BlsMcLa5lfo9II2BWMi%2BqjTs9DKa5xW7NxbEbhnwhFuZbt0gUVYrFC%2FGAJzhV%2FSt%2FvR6tO966wur5fhqw5Ehhn56U7DisBWI3AdsQbM2NB7ysXp9kAysC0pvNA5dDWp78m8Rnt0l6Yhe7tt%2F5s28e9rlAC7so6ueoedWsUolUPjYuejNLXVEfVnqr3Eomu9pXIgEZu4vyHPME1LjkyemBfu9HVH8L%2Bkzru8KA2cCzlGVekny%2BJBz4pXfoogOUpZSTI2ccWFpJXg%3D%3D--uUMytWj%2BuvpXX2BB--fdAcW9VPS7fP823TV5x94w%3D%3D; path=/; HttpOnly; secure; SameSite=Lax",
+        "Set-Cookie: _octo=GH1.1.1086764412.1791741600; expires=Mon, 11 Oct 2027 18:00:00 GMT; domain=.github.com; path=/; secure; SameSite=Lax",
+        "Set-Cookie: logged_in=no; expires=Mon, 11 Oct 2027 18:00:00 GMT; domain=.github.com; path=/; HttpOnly; secure; SameSite=Lax",
+        "Content-Length: 16739",
+        "X-GitHub-Request-Id: EBDB:378CE9:147AF5E:19BF4D5:6ACBCEA0",
+        "x-github-edge-region: fra",
+        "connection: close"
+      ]
     }
   }
 }
