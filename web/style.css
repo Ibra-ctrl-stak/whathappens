@@ -11,7 +11,8 @@ h1 { margin: 0 0 4px; font-size: 18px; }
 .stats { margin: 0 0 8px; color: var(--muted); }
 .filters { display: flex; gap: 8px; margin: 0; padding: 0; border: 0; }
 .filters legend { float: left; margin-right: 8px; color: var(--muted); }
-main { padding: 8px 20px 40px; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 640px; gap: 16px; padding: 8px 20px 40px; align-items: start; }
+@media (width < 1200px) { main { grid-template-columns: 1fr; } }
 .error { color: var(--bad); }
 
 .events { list-style: none; margin: 0; padding: 0; }
@@ -19,7 +20,10 @@ main { padding: 8px 20px 40px; }
   display: grid; grid-template-columns: 80px 140px 52px 20px 140px 1fr auto;
   gap: 10px; align-items: baseline; padding: 3px 6px; border-bottom: 1px solid var(--line);
 }
+.event { cursor: pointer; }
 .event:hover { background: var(--panel); }
+.event:focus-visible { outline: 1px solid var(--muted); outline-offset: -1px; }
+.event[aria-current="true"] { background: #232838; box-shadow: inset 3px 0 0 var(--text); }
 .time { text-align: right; color: var(--muted); }
 .track { position: relative; align-self: center; height: 4px; background: var(--line); border-radius: 2px; }
 .dot { position: absolute; top: -3px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; background: currentColor; }
@@ -43,3 +47,15 @@ main { padding: 8px 20px 40px; }
 .problem { color: var(--bad); font-size: 12px; }
 
 .hide-dns .layer-dns, .hide-tcp .layer-tcp, .hide-tls .layer-tls, .hide-http .layer-http { display: none; }
+
+/* hex panel (slice 2) */
+.hex-panel {
+  position: sticky; top: 120px; max-height: calc(100vh - 140px); overflow: auto;
+  padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+}
+.hex-title { margin: 0 0 4px; font-size: 14px; overflow-wrap: anywhere; }
+.hex-meta, .hex-hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+.hex-dump { font-size: 13px; line-height: 1.5; }
+.hex-row { display: grid; grid-template-columns: 9ch 49ch 16ch; gap: 2ch; white-space: pre; }
+.hex-offset { color: var(--muted); }
+.hex-ascii { color: var(--muted); }

@@ -1,5 +1,9 @@
-// Timeline page, slice 1. All text from the session goes through textContent; no HTML strings.
+// Timeline page: event list (slice 1) + hex panel of the selected event (slice 2).
+// All text from the session goes through textContent; no HTML strings.
+import { hexRows, BYTES_PER_ROW } from './hex.js';
+
 const LAYERS = ['dns', 'tcp', 'tls', 'http'];
+const HALF_ROW = BYTES_PER_ROW / 2;
 const ARROWS = { out: '→', in: '←' };
 const LAYER_TITLES = { dns: 'DNS', tcp: 'TCP', tls: 'TLS', http: 'HTTP' };
 
@@ -59,6 +63,62 @@ function row(e, durationMs) {
   return item;
 }
 
+// ---- hex panel -------------------------------------------------------------------------------
+
+const hexLine = (r) => {
+  const line = el('div', 'hex-row');
+  const bytes = [r.hex.slice(0, HALF_ROW).join(' '), r.hex.slice(HALF_ROW).join(' ')].filter(Boolean).join('  ');
+  line.append(el('span', 'hex-offset', r.offset), el('span', 'hex-bytes', bytes), el('span', 'hex-ascii', r.ascii));
+  return line;
+};
+
+function showHex(e, bytes) {
+  const panel = document.getElementById('hex');
+  const title = el('h2', 'hex-title', e.summary);
+  const meta = el('p', 'hex-meta', `${formatRange(e)} · ${e.layer.toUpperCase()} ${e.kind}`);
+  if (!bytes) {
+    panel.replaceChildren(title, meta, el('p', 'hex-hint', 'У этого события нет записанных байтов (например, SYN/ACK делает ОС, Node их не видит).'));
+    return;
+  }
+  const dump = el('div', 'hex-dump');
+  dump.append(...hexRows(bytes, e.offset).map(hexLine));
+  panel.replaceChildren(title, meta, dump);
+}
+
+let latestRequest = 0;
+
+async function select(index, e, item) {
+  document.querySelector('.event[aria-current="true"]')?.removeAttribute('aria-current');
+  item.setAttribute('aria-current', 'true');
+  const request = ++latestRequest;
+  let bytes = null;
+  if (e.buffer !== null) {
+    const response = await fetch(`events/${index}/bytes`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`bytes of event ${index}: HTTP ${response.status}`);
+    bytes = new Uint8Array(await response.arrayBuffer());
+  }
+  if (request === latestRequest) showHex(e, bytes); // a later click won: drop this stale answer
+}
+
+function selectable(item, index, e) {
+  item.tabIndex = 0;
+  const go = () => select(index, e, item).catch(showError);
+  item.addEventListener('click', go);
+  item.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      go();
+    }
+  });
+  return item;
+}
+
+function showError(err) {
+  const box = document.getElementById('error');
+  box.textContent = `Ошибка: ${err.message}`;
+  box.hidden = false;
+}
+
 async function main() {
   const response = await fetch('timeline.json', { cache: 'no-store' });
   if (!response.ok) throw new Error(`timeline.json: HTTP ${response.status}`);
@@ -66,11 +126,7 @@ async function main() {
   const list = document.getElementById('events');
   renderStats(view);
   renderFilters(list);
-  list.append(...view.events.map((e) => row(e, view.durationMs)));
+  list.append(...view.events.map((e, i) => selectable(row(e, view.durationMs), i, e)));
 }
 
-main().catch((err) => {
-  const box = document.getElementById('error');
-  box.textContent = `Не удалось загрузить шкалу: ${err.message}`;
-  box.hidden = false;
-});
+main().catch(showError);
