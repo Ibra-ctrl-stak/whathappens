@@ -12,12 +12,25 @@
   вопрос), лимиты резолвера, фрейминг HTTP по Content-Length, повреждённые события вместо
   падения шкалы, экранирование управляющих символов, дыры в тестах.
 
-## День 4 — разбор полей
+## День 4 — разбор полей (сделано)
 
-- ClientHello / ServerHello: расширения (SNI, ALPN, key_share, supported_versions),
-  каждое поле с диапазоном байтов. Снять `todo` с теста SNI/ALPN в `test/fixture.test.mjs`
-  (значения Wireshark уже в `expected.json`).
-- Цепочка сертификатов через `X509Certificate`; NewSessionTicket; HTTP-заголовки как поля.
+- Модель поля `{ name, offset, length, value, label, children }` (`src/fields.js`); дети
+  всегда без зазоров покрывают родителя — проверяется для каждого поля каждого сообщения.
+- Координаты: TLS-поля — позиции в handshake-потоке направления
+  (`decryptSession().client|server.handshake`, индекс `messages`); HTTP-поля — позиции в
+  расшифрованном потоке (буфер шкалы `http/out|in`).
+- ClientHello / ServerHello / EncryptedExtensions с расширениями (SNI, ALPN, key_share,
+  supported_versions и др.), Certificate (+ `X509Certificate`), CertificateVerify, Finished,
+  NewSessionTicket, HTTP (стартовая строка, заголовки по байтам, тело).
+- Подписи: цепочка (каждый подписан следующим, последний — корнем из хранилища Node, имя
+  хоста, сроки на момент записи) и CertificateVerify над хэшем восстановленного транскрипта.
+- Эталонная сессия перезаписана; оракул tshark расширен под все новые поля.
+
+Осталось на стыке с Днём 5:
+- [ ] прикрепить деревья полей к событиям шкалы (нужен буфер handshake-потока на шкале,
+      например `tls-hs/out|in`, и связь «запись → её кусок handshake-потока»);
+- [ ] не покрыто тестами: HelloRetryRequest, RSA-PSS/Ed25519 в CertificateVerify,
+      сертификат, который не декодируется.
 
 ## День 5 — визуализатор (localhost)
 
