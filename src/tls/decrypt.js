@@ -157,6 +157,7 @@ function decryptDirection(records, suite, hsSecret, appSecret) {
   // Handshake messages may span records (and both plaintext and encrypted ones), so one buffer.
   let pendingHandshake = Buffer.alloc(0);
   let appDataOffset = 0;
+  let handshakeOffset = 0;
   const out = [];
   for (const record of records) {
     const entry = openRecord(record, { suite, keys: epochs[epoch], epoch, seq, brokenAt });
@@ -164,6 +165,8 @@ function decryptDirection(records, suite, hsSecret, appSecret) {
     if (entry.epoch !== 'plaintext') seq += 1;
 
     if (entry.contentType === CONTENT.HANDSHAKE) {
+      entry.handshakeOffset = handshakeOffset; // where this record's content sits in the handshake stream
+      handshakeOffset += entry.content.length;
       const { messages, rest } = takeHandshakeMessages(Buffer.concat([pendingHandshake, entry.content]));
       pendingHandshake = rest;
       entry.handshakeTypes = messages.map((m) => m.type);
@@ -179,7 +182,21 @@ function decryptDirection(records, suite, hsSecret, appSecret) {
     out.push(entry);
   }
   const appData = Buffer.concat(out.filter((e) => e.appDataOffset !== undefined).map((e) => e.content));
-  return { records: out, appData };
+  const handshake = Buffer.concat(out.filter((e) => e.handshakeOffset !== undefined).map((e) => e.content));
+  return { records: out, appData, handshake, messages: indexHandshake(handshake) };
+}
+
+/** Complete handshake messages in a direction's handshake stream: { type, offset, length }. */
+function indexHandshake(stream) {
+  const messages = [];
+  let pos = 0;
+  while (pos + 4 <= stream.length) {
+    const length = 4 + stream.readUIntBE(pos + 1, 3);
+    if (pos + length > stream.length) break; // incomplete last message: nothing to index
+    messages.push({ type: stream[pos], offset: pos, length });
+    pos += length;
+  }
+  return messages;
 }
 
 export function streamsFromRaw(raw) {
