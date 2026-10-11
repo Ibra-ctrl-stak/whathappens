@@ -3,33 +3,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveA, ROOT_SERVERS, MAX_QUERIES } from '../src/dns/iterative.js';
-import { TYPE } from '../src/dns/packet.js';
+import { respond, NS, A, CNAME } from './helpers/dns-build.mjs';
 
 const BOUNDED_MS = 2000;
-
-const encodeName = (name) =>
-  Buffer.concat([...name.split('.').filter(Boolean).map((l) => Buffer.concat([Buffer.from([l.length]), Buffer.from(l)])), Buffer.from([0])]);
-
-function encodeRecord({ name, type, data }) {
-  const rdata = type === TYPE.A ? Buffer.from(data.split('.').map(Number)) : encodeName(data);
-  const fixed = Buffer.alloc(10);
-  fixed.writeUInt16BE(type, 0);
-  fixed.writeUInt16BE(1, 2); // IN
-  fixed.writeUInt32BE(60, 4);
-  fixed.writeUInt16BE(rdata.length, 8);
-  return Buffer.concat([encodeName(name), fixed, rdata]);
-}
-
-/** A response to `query` (question copied verbatim) with the given sections. */
-function respond(query, { aa = false, answers = [], authority = [], additional = [] }) {
-  const qEnd = query.length - 11; // buildQuery appends an 11-byte OPT record
-  const header = Buffer.from(query.subarray(0, 12));
-  header.writeUInt16BE(0x8000 | (aa ? 0x0400 : 0), 2);
-  header.writeUInt16BE(answers.length, 6);
-  header.writeUInt16BE(authority.length, 8);
-  header.writeUInt16BE(additional.length, 10);
-  return Buffer.concat([header, query.subarray(12, qEnd), ...[...answers, ...authority, ...additional].map(encodeRecord)]);
-}
 
 const questionName = (query) => {
   const labels = [];
@@ -37,22 +13,19 @@ const questionName = (query) => {
   return labels.join('.');
 };
 
-/** Fake network: world(ip, qname) -> response sections, or null for "no answer". */
+/** Fake network: world(ip, qname, query) -> response sections, raw response bytes, or null for "no answer". */
 function fakeTransport(world) {
   const calls = [];
   const transport = async (server, query) => {
     calls.push({ ip: server.ip, qname: questionName(query) });
-    const sections = world(server.ip, questionName(query));
-    if (!sections) throw Object.assign(new Error('timeout (fake)'), { sentAt: 0, localPort: 1, failedAt: 1 });
-    return { response: respond(query, sections), localPort: 1, sentAt: 0, receivedAt: 1 };
+    const reply = world(server.ip, questionName(query), query);
+    if (!reply) throw Object.assign(new Error('timeout (fake)'), { sentAt: 0, localPort: 1, failedAt: 1 });
+    return { response: Buffer.isBuffer(reply) ? reply : respond(query, reply), localPort: 1, sentAt: 0, receivedAt: 1 };
   };
   return { transport, calls };
 }
 
 const isRoot = (ip) => ROOT_SERVERS.some((s) => s.ip === ip);
-const NS = (name, data) => ({ name, type: TYPE.NS, data });
-const A = (name, data) => ({ name, type: TYPE.A, data });
-const CNAME = (name, data) => ({ name, type: TYPE.CNAME, data });
 
 test('walks root -> TLD -> authoritative and returns the A record', async () => {
   const { transport, calls } = fakeTransport((ip) => {
@@ -84,4 +57,26 @@ test('a referral to many unglued nameservers cannot fan out without bound', { ti
   const { transport, calls } = fakeTransport((ip) => (isRoot(ip) ? { authority: fanOut } : null));
   await assert.rejects(resolveA('victim.broken.test', { transport }));
   assert.ok(calls.length <= MAX_QUERIES, `${calls.length} queries`);
+});
+
+test('a malformed answer is recorded with its bytes and the reason, then the next server is asked', async () => {
+  const malformed = (query) => {
+    const bad = respond(query, {});
+    bad.writeUInt16BE(1, 6); // claims one answer record that is not there
+    return bad;
+  };
+  const { transport } = fakeTransport((ip, qname, query) => {
+    if (ip === ROOT_SERVERS[0].ip) return malformed(query);
+    if (isRoot(ip)) return { aa: true, answers: [A('www.example.test', '203.0.113.7')] };
+    return null;
+  });
+  const exchanges = [];
+  assert.deepEqual(await resolveA('www.example.test', { transport, onExchange: (e) => exchanges.push(e) }), ['203.0.113.7']);
+  const [first, second] = exchanges;
+  assert.equal(first.server.ip, ROOT_SERVERS[0].ip);
+  assert.ok(Buffer.isBuffer(first.response) && first.response.length > 12, 'malformed bytes are kept');
+  assert.match(first.error, /malformed response/);
+  assert.equal(first.parsed, null);
+  assert.equal(second.server.ip, ROOT_SERVERS[1].ip);
+  assert.equal(second.error, undefined);
 });

@@ -5,24 +5,16 @@ import { resolveA } from './src/dns/iterative.js';
 import { recordHttpsGet } from './src/tls/recorder.js';
 import { decryptSession } from './src/tls/decrypt.js';
 import { serializeSession } from './src/session.js';
+import { describeRecord } from './src/timeline.js';
 import { nowMs } from './src/clock.js';
 
 const HOST = 'github.com';
 const PATH = process.argv[2] ?? '/robots.txt';
 const OUT_DIR = new URL('./out/', import.meta.url);
-const HANDSHAKE_NAMES = { 4: 'NewSessionTicket', 8: 'EncryptedExtensions', 11: 'Certificate', 15: 'CertificateVerify', 20: 'Finished' };
-const CONTENT_NAMES = { 20: 'ChangeCipherSpec', 21: 'Alert', 22: 'Handshake', 23: 'ApplicationData' };
 
 function check(label, ok, detail = '') {
   console.log(`  ${ok ? 'OK  ' : 'FAIL'} ${label}${detail ? ` — ${detail}` : ''}`);
   return ok;
-}
-
-function describeRecord(r) {
-  if (r.epoch === 'plaintext') return `${CONTENT_NAMES[r.outerType]} (plaintext, ${r.length} B)`;
-  const inner = CONTENT_NAMES[r.contentType] ?? r.contentType;
-  const hs = r.handshakeTypes?.length ? ` [${r.handshakeTypes.map((t) => HANDSHAKE_NAMES[t] ?? t).join(', ')}]` : '';
-  return `${r.epoch} #${r.seq}: ${inner}, ${r.content.length} B${hs}`;
 }
 
 async function main() {
@@ -34,7 +26,7 @@ async function main() {
     onExchange: (e) => {
       dns.push(e);
       if (e.error) {
-        console.log(`  ${e.server.name} (${e.server.ip}) :${e.localPort}  LOST — ${e.error}, retrying`);
+        console.log(`  ${e.server.name} (${e.server.ip}) :${e.localPort}  ${e.response ? 'DAMAGED' : 'LOST'} — ${e.error}, retrying`);
         return;
       }
       const ns = e.parsed.authority.filter((r) => r.typeName === 'NS').map((r) => r.data);

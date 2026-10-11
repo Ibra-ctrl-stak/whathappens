@@ -88,8 +88,17 @@ async function askOnce(server, name, ctx) {
     throw err;
   }
   const { response, localPort, sentAt, receivedAt } = result;
-  const parsed = parseResponse(response);
-  ctx.onExchange({ server, localPort, qname: name, query, response, sentAt, receivedAt, rttMs: receivedAt - sentAt, parsed });
+  const answered = { server, localPort, qname: name, query, response, sentAt, receivedAt, rttMs: receivedAt - sentAt };
+  let parsed;
+  try {
+    parsed = parseResponse(response);
+  } catch (err) {
+    // Keep the undecodable bytes in the record: the timeline shows them as damaged.
+    const error = `malformed response: ${err.message}`;
+    ctx.onExchange({ ...answered, failedAt: receivedAt, error, parsed: null });
+    throw new Error(`${error} from ${server.name} (${server.ip})`);
+  }
+  ctx.onExchange({ ...answered, parsed });
   return parsed;
 }
 

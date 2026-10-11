@@ -130,22 +130,37 @@ function helloInfo(records, expectedType) {
  * Walk one direction: plaintext hello -> handshake epoch (until Finished) -> application epoch.
  * Each epoch has its own keys and its own sequence counter starting at 0.
  */
+/**
+ * One record -> entry. `length` is always the outer record body length, as on the wire.
+ * A record that fails to decrypt is damaged; after it the key/sequence state of this direction
+ * is unknown, so later encrypted records are reported as not decrypted instead of guessed at.
+ */
+function openRecord(record, { suite, keys, epoch, seq, brokenAt }) {
+  const base = { offset: record.offset, outerType: record.type, length: record.body.length };
+  if (record.type !== CONTENT.APP_DATA) {
+    return { ...base, epoch: 'plaintext', contentType: record.type, content: record.body };
+  }
+  const unread = { ...base, epoch, seq, contentType: null, content: null, damaged: true };
+  if (brokenAt) return { ...unread, problem: `not decrypted: an earlier record in this direction failed (${brokenAt})` };
+  try {
+    return { ...base, epoch, seq, ...decryptRecord(suite, keys, seq, record) };
+  } catch (err) {
+    return { ...unread, problem: `cannot decrypt (${epoch} #${seq}): ${err.message}` };
+  }
+}
+
 function decryptDirection(records, suite, hsSecret, appSecret) {
   const epochs = { handshake: trafficKeys(suite, hsSecret), application: trafficKeys(suite, appSecret) };
   let epoch = 'handshake';
   let seq = 0;
+  let brokenAt = null;
   // Handshake messages may span records (and both plaintext and encrypted ones), so one buffer.
   let pendingHandshake = Buffer.alloc(0);
   let appDataOffset = 0;
   const out = [];
   for (const record of records) {
-    // `length` is always the outer record body length, as on the wire.
-    const entry =
-      record.type === CONTENT.APP_DATA
-        ? { offset: record.offset, epoch, seq, outerType: record.type, length: record.body.length,
-            ...decryptRecord(suite, epochs[epoch], seq, record) }
-        : { offset: record.offset, epoch: 'plaintext', outerType: record.type, length: record.body.length,
-            contentType: record.type, content: record.body };
+    const entry = openRecord(record, { suite, keys: epochs[epoch], epoch, seq, brokenAt });
+    if (entry.damaged && !brokenAt) brokenAt = `${epoch} #${seq}`;
     if (entry.epoch !== 'plaintext') seq += 1;
 
     if (entry.contentType === CONTENT.HANDSHAKE) {
