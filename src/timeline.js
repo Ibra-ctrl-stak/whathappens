@@ -6,6 +6,9 @@
 import { parseResponse, TYPE } from './dns/packet.js';
 import { decryptSession } from './tls/decrypt.js';
 import { parseHttpMessage, headerValue } from './http/message.js';
+import { httpFields } from './http/fields.js';
+import { recordFields } from './tls/record-fields.js';
+import { parseHandshake } from './tls/handshake-fields.js';
 import { printable, printableDeep } from './text.js';
 
 const RECORD_HEADER_LEN = 5;
@@ -22,7 +25,8 @@ const HTTP_KINDS = Object.freeze({
   in: { head: 'response-head', body: 'response-body' },
 });
 
-const event = (fields) => ({ dir: null, buffer: null, offset: 0, length: 0, detail: {}, damaged: false, problem: null, ...fields });
+// fields: the parsed field tree of exactly this event's bytes, or null when nothing was parsed.
+const event = (props) => ({ dir: null, buffer: null, offset: 0, length: 0, detail: {}, fields: null, damaged: false, problem: null, ...props });
 const bytesEvent = (buffer, bytes, fields) => event({ buffer, offset: 0, length: bytes.length, ...fields });
 const damage = (problem) => ({ damaged: true, problem });
 
@@ -83,7 +87,7 @@ function chunkBounds(raw, dir) {
 
 const timeAtByte = (bounds, pos) => bounds.find((b) => pos < b.end).at;
 
-function tcpPart(tls, bounds) {
+function tcpPart(tls, bounds, streams) {
   const remote = `${tls.ip}:${tls.port}`;
   const chunks = ['out', 'in'].flatMap((dir) =>
     bounds[dir].map((b) => event({
@@ -93,7 +97,7 @@ function tcpPart(tls, bounds) {
   );
   const t = tls.times;
   return {
-    buffers: ['out', 'in'].map((dir) => [`tcp/${dir}`, Buffer.concat(bounds[dir].map((b) => b.bytes))]),
+    buffers: ['out', 'in'].map((dir) => [`tcp/${dir}`, streams[dir]]),
     events: [
       event({ at: t.connectStartedAt, layer: 'tcp', kind: 'connect', summary: `connect ${tls.local.address}:${tls.local.port} -> ${remote}` }),
       event({ at: t.connectedAt, layer: 'tcp', kind: 'established', summary: 'connected (SYN / SYN-ACK / ACK are handled by the OS, not visible to Node)' }),
@@ -121,10 +125,11 @@ export function describeRecord(r) {
 
 const recordEnd = (r) => r.offset + RECORD_HEADER_LEN + r.length - 1;
 
-function recordEvent(dir, r, bounds) {
+function recordEvent(dir, r, bounds, streams) {
   return event({
     at: timeAtByte(bounds[dir], recordEnd(r)), layer: 'tls', kind: 'record', dir, buffer: `tcp/${dir}`,
     offset: r.offset, length: RECORD_HEADER_LEN + r.length, summary: describeRecord(r),
+    fields: recordFields(streams[dir], r.offset, RECORD_HEADER_LEN + r.length),
     detail: {
       epoch: r.epoch, seq: r.seq ?? null, outerType: r.outerType, contentType: r.contentType,
       handshakeTypes: r.handshakeTypes ?? [], plaintextLength: r.content?.length ?? 0, appDataOffset: r.appDataOffset ?? null,
@@ -153,18 +158,35 @@ function undecodableStreams(tls, bounds, reason) {
   return { buffers: [], events };
 }
 
-function tlsPart(tls, decrypted, bounds) {
+/**
+ * One event per handshake message, over the direction's handshake stream (buffer tls-hs/<dir>),
+ * timed by the record that delivered its last byte.
+ */
+function handshakeMessageEvents(dir, side, bounds) {
+  return side.messages.map((m) => {
+    const last = m.offset + m.length - 1;
+    const r = side.records.find((rec) => rec.handshakeOffset !== undefined && last < rec.handshakeOffset + rec.content.length);
+    const fields = parseHandshake(side.handshake, m);
+    return event({
+      at: timeAtByte(bounds[dir], recordEnd(r)), layer: 'tls', kind: 'handshake-message', dir, buffer: `tls-hs/${dir}`,
+      offset: m.offset, length: m.length, summary: fields.name, detail: { type: m.type }, fields,
+      ...(fields.problem ? damage(fields.problem) : {}),
+    });
+  });
+}
+
+function tlsPart(tls, decrypted, bounds, streams) {
   if (decrypted.error) return undecodableStreams(tls, bounds, decrypted.error);
   const sides = [['out', decrypted.client, 'client'], ['in', decrypted.server, 'server']];
   const records = sides.flatMap(([dir, side, name]) => {
     const trailing = decrypted.trailingBytes[name];
     const streamLength = bounds[dir].at(-1)?.end ?? 0;
     const tail = trailing > 0 ? [incompleteRecordEvent(dir, streamLength, trailing, bounds)] : [];
-    return [...side.records.map((r) => recordEvent(dir, r, bounds)), ...tail];
+    return [...side.records.map((r) => recordEvent(dir, r, bounds, streams)), ...tail, ...handshakeMessageEvents(dir, side, bounds)];
   });
   const { protocol, cipher, alpn } = tls.info;
   const secure = event({ at: tls.times.secureAt, layer: 'tls', kind: 'secure', summary: `${protocol} ${cipher.standardName}, ALPN ${alpn}` });
-  return { buffers: [], events: [...records, secure] };
+  return { buffers: [['tls-hs/out', decrypted.client.handshake], ['tls-hs/in', decrypted.server.handshake]], events: [...records, secure] };
 }
 
 // ---- HTTP ------------------------------------------------------------------------------------
@@ -180,12 +202,15 @@ function headSummary(msg) {
   return `${msg.startLine.status} ${msg.startLine.reason}, ${headerValue(msg, 'content-type') ?? 'no content-type'}`;
 }
 
-function messageEvents(msg, dir, buffer, timeAt) {
+function messageEvents(msg, tree, dir, buffer, timeAt) {
   const kinds = HTTP_KINDS[dir];
+  const part = (name) => tree.children.find((f) => f.name === name) ?? null;
   const detail = msg.kind === 'request'
     ? { headers: msg.headers.length, host: headerValue(msg, 'host') ?? null }
     : { status: msg.startLine.status, headers: msg.headers.length };
-  const head = event({ at: timeAt(msg.head.length - 1), layer: 'http', kind: kinds.head, dir, buffer, ...msg.head, summary: headSummary(msg), detail });
+  const head = event({
+    at: timeAt(msg.head.length - 1), layer: 'http', kind: kinds.head, dir, buffer, ...msg.head, summary: headSummary(msg), detail, fields: part('head'),
+  });
   const { body, extra, problems } = msg;
   const bodyProblem = body.framing === 'invalid' || body.complete === false ? problems[0] : null;
   const events = [head];
@@ -194,13 +219,14 @@ function messageEvents(msg, dir, buffer, timeAt) {
       at: timeAt(Math.max(body.offset + body.length, msg.head.length) - 1), layer: 'http', kind: kinds.body, dir, buffer,
       offset: body.offset, length: body.length, summary: `body ${body.length} B (${body.framing})`,
       detail: { framing: body.framing, declaredLength: body.declaredLength, complete: body.complete },
+      fields: part('body'), // null for a zero-length body flagged only for its problem
       ...(bodyProblem ? damage(bodyProblem) : {}),
     }));
   }
   if (extra) {
     events.push(event({
       at: timeAt(extra.offset + extra.length - 1), layer: 'http', kind: 'extra-bytes', dir, buffer, ...extra,
-      summary: `${extra.length} B after the message`, ...damage(problems.at(-1)),
+      summary: `${extra.length} B after the message`, fields: part('extra'), ...damage(problems.at(-1)),
     }));
   }
   return events;
@@ -211,14 +237,14 @@ function httpDirection(dir, side, bounds) {
   if (data.length === 0) return [];
   const buffer = `http/${dir}`;
   const timeAt = (pos) => plaintextTime(side, bounds, pos);
-  try {
-    return messageEvents(parseHttpMessage(data), dir, buffer, timeAt);
-  } catch (err) {
+  const tree = httpFields(data); // never throws: a broken message is one field with a problem
+  if (tree.problem) {
     return [event({
       at: timeAt(data.length - 1), layer: 'http', kind: 'message', dir, buffer, length: data.length,
-      summary: 'damaged HTTP message', ...damage(err.message),
+      summary: 'damaged HTTP message', fields: tree, ...damage(tree.problem),
     })];
   }
+  return messageEvents(parseHttpMessage(data), tree, dir, buffer, timeAt);
 }
 
 function httpPart(decrypted, bounds) {
@@ -246,7 +272,10 @@ export function buildTimeline(session) {
   const decrypted = decryptOrExplain(session.tls);
   const bounds = { out: chunkBounds(session.tls.raw, 'out'), in: chunkBounds(session.tls.raw, 'in') };
   // Parts are listed in layer order; with the index tie-break, equal times keep DNS < TCP < TLS < HTTP.
-  const parts = [dnsPart(session.dns), tcpPart(session.tls, bounds), tlsPart(session.tls, decrypted, bounds), httpPart(decrypted, bounds)];
+  const streams = { out: Buffer.concat(bounds.out.map((b) => b.bytes)), in: Buffer.concat(bounds.in.map((b) => b.bytes)) };
+  const parts = [
+    dnsPart(session.dns), tcpPart(session.tls, bounds, streams), tlsPart(session.tls, decrypted, bounds, streams), httpPart(decrypted, bounds),
+  ];
   const all = parts.flatMap((p) => p.events);
   const missing = all.find((e) => !Number.isFinite(e.at));
   if (missing) throw new Error(`${missing.layer}/${missing.kind} has no timestamp in this recording`);
@@ -256,7 +285,7 @@ export function buildTimeline(session) {
   const events = all
     .map((e, index) => ({
       t: roundUs(e.at - origin), ...e, index,
-      summary: printable(e.summary), problem: e.problem === null ? null : printable(e.problem), detail: printableDeep(e.detail),
+      summary: printable(e.summary), problem: e.problem === null ? null : printable(e.problem), detail: printableDeep(e.detail), fields: printableDeep(e.fields),
     }))
     .sort((a, b) => a.t - b.t || a.index - b.index)
     .map(({ index, ...e }) => e);

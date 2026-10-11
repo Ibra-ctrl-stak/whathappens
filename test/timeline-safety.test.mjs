@@ -48,9 +48,10 @@ test('the hostile session still parses into request and response events', () => 
   assert.ok(events.some((e) => e.kind === 'response-head'));
 });
 
-test('no summary, problem or detail string carries a control character', () => {
+test('no summary, problem, detail or field-tree string carries a control character', () => {
+  assert.ok(events.some((e) => e.layer === 'http' && e.fields), 'HTTP field trees are part of the check');
   for (const e of events) {
-    for (const s of strings({ summary: e.summary, problem: e.problem, detail: e.detail })) {
+    for (const s of strings({ summary: e.summary, problem: e.problem, detail: e.detail, fields: e.fields })) {
       assert.doesNotMatch(s, CONTROL, `${e.layer}/${e.kind}: ${JSON.stringify(s)}`);
     }
   }

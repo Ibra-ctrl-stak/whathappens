@@ -1,6 +1,6 @@
 // HTTP/1.1 message as a field tree over the decrypted stream (timeline buffer http/out|in):
-// start line tokens, each header (name, colon, optional whitespace, value, CRLF), the empty
-// line, body and any extra bytes. Children tile their parent, so every byte has a field.
+// head (start line tokens, each header: name, colon, optional whitespace, value, CRLF; the empty
+// line), body and any extra bytes. Children tile their parent, so every byte has a field.
 import { field } from '../fields.js';
 import { parseHttpMessage } from './message.js';
 
@@ -56,10 +56,11 @@ export function httpFields(buf) {
   }
   const text = buf.toString('latin1');
   const { body, extra, problems } = msg;
+  const head = field('head', 0, msg.head.length, {
+    children: [startLine(msg.startLine, msg.kind), ...msg.headers.map((h) => header(h, text)), leaf('empty_line', msg.head.length - CRLF, CRLF)],
+  });
   const children = [
-    startLine(msg.startLine, msg.kind),
-    ...msg.headers.map((h) => header(h, text)),
-    leaf('empty_line', msg.head.length - CRLF, CRLF),
+    head,
     ...(body.length > 0 ? [field('body', body.offset, body.length, { label: body.framing })] : []),
     ...(extra ? [leaf('extra', extra.offset, extra.length)] : []),
   ];
