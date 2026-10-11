@@ -2,7 +2,8 @@
 // (decryptSession(...).client|server.handshake). Offsets are positions in that stream.
 import { cursor, field } from '../fields.js';
 import { extensions } from './extensions.js';
-import { HANDSHAKE_TYPES, VERSIONS, CIPHER_SUITES } from './names.js';
+import { certificateBody } from './certificate-fields.js';
+import { HANDSHAKE_TYPES, VERSIONS, CIPHER_SUITES, SIGNATURE_SCHEMES } from './names.js';
 
 // RFC 8446 §4.1.3: a ServerHello with this random is a HelloRetryRequest
 const HRR_RANDOM = 'cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c';
@@ -34,6 +35,9 @@ const BODIES = Object.freeze({
   1: clientHello,
   2: serverHello,
   8: (c) => [extensions(c, 'encrypted_extensions')],
+  11: certificateBody,
+  15: (c) => [c.uint('algorithm', 2, SIGNATURE_SCHEMES), c.opaque('signature', 2)],
+  20: (c) => [c.bytes('verify_data', c.left)],
 });
 
 /**
@@ -46,7 +50,7 @@ export function parseHandshake(stream, message) {
   const c = cursor(stream, message.offset, message.offset + message.length);
   try {
     const header = [c.uint('msg_type', 1, HANDSHAKE_TYPES), c.uint('length', 3)];
-    const body = (BODIES[message.type] ?? raw)(c);
+    const body = (BODIES[message.type] ?? raw)(c, stream);
     if (c.left !== 0) throw new Error(`${c.left} unparsed bytes at offset ${c.pos}`);
     return field(name, message.offset, message.length, { children: [...header, ...body] });
   } catch (err) {
