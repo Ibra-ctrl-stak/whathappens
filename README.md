@@ -30,9 +30,21 @@ node cli.mjs github.com/robots.txt
    supported_versions…), certificates (`X509Certificate`), CertificateVerify, NewSessionTicket,
    HTTP headers and chunk sizes/data/trailers. For parsed events, every byte belongs to exactly one leaf field.
    DNS/TCP events have raw bytes without a field tree; X.509 internals are summarized, not dissected.
-5. **Includes signature checks.** Tested helpers verify certificate-chain signatures and
-   CertificateVerify over the reconstructed transcript. These extra checks are not yet shown
-   in the viewer; live connections use Node's normal certificate verification.
+5. **Checks signatures independently and shows the results.** Selecting the server's
+   `Certificate` or `CertificateVerify` handshake event shows our own results, each as
+   *passed*, *failed* or *cannot be checked* (with the concrete reason):
+   - **CertificateVerify:** the server's signature over the hash of the reconstructed transcript
+     (ClientHello, ServerHello, EncryptedExtensions, Certificate), checked with the public key of
+     the server's first certificate; the signature scheme must fit that key's type and curve.
+   - **Certificate chain signatures:** each certificate's signature checked with the next
+     certificate the server sent (issuer name must match), and the last one with a root from
+     Node's built-in root store. This is **not** a full trust decision: host name, validity
+     dates, certificate constraints (basicConstraints, keyUsage, name constraints), revocation
+     and Certificate Transparency are not part of it.
+
+   These are computed from the recorded bytes; they are not network events. Live connections
+   are separately verified by Node itself (normal TLS certificate verification); the viewer does
+   not present that as our result.
 6. **Shows it all in a page.** Event timeline, hex view, field tree: click a field to highlight
    its bytes, click a byte to find its field.
 

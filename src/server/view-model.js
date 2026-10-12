@@ -2,7 +2,21 @@
 // trees yet (later slices), never the keylog or the raw session.
 const EVENT_KEYS = Object.freeze(['t', 'layer', 'kind', 'dir', 'buffer', 'offset', 'length', 'summary', 'damaged', 'problem']);
 
-const pick = (event) => Object.fromEntries(EVENT_KEYS.map((k) => [k, event[k]]));
+/** Our check results (see src/tls/certificates.js), reduced to what the panel prints. */
+const checkView = (c) => ({
+  id: c.id,
+  title: c.title,
+  status: c.status,
+  explanation: c.explanation,
+  reason: c.reason ?? null,
+  steps: (c.steps ?? []).map((s) => ({ label: s.label, status: s.status, reason: s.reason ?? null })),
+  notCovered: [...(c.notCovered ?? [])],
+});
+
+const pick = (event) => ({
+  ...Object.fromEntries(EVENT_KEYS.map((k) => [k, event[k]])),
+  checks: event.checks ? event.checks.map(checkView) : null,
+});
 
 /** (index) -> the bytes of that event, or null when it has none / does not exist. */
 export function eventBytes(timeline) {

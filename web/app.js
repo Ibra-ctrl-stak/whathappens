@@ -163,6 +163,22 @@ function revealWithin(scroller, node) {
   else if (target.right > left + scroller.clientWidth) scroller.scrollLeft += target.right - left - scroller.clientWidth;
 }
 
+/**
+ * If `node`'s top edge is outside `scroller`'s visible area, scroll once so it sits `margin` px
+ * below the top. No-op when already visible, so later manual scrolling is never fought.
+ */
+function revealTop(scroller, node, margin) {
+  if (!node) return;
+  const box = scroller.getBoundingClientRect();
+  const target = node.getBoundingClientRect();
+  const top = box.top + scroller.clientTop;
+  const visible = target.top >= top && target.bottom <= top + scroller.clientHeight;
+  if (!visible) scroller.scrollTop += target.top - top - margin;
+  const left = box.left + scroller.clientLeft;
+  if (target.left < left) scroller.scrollLeft -= left - target.left;
+  else if (target.right > left + scroller.clientWidth) scroller.scrollLeft += target.right - left - scroller.clientWidth;
+}
+
 function linkTreeAndBytes(e, index, tree, cells, dump, viewport) {
   let lit = [];
   let current = null;
@@ -180,8 +196,15 @@ function linkTreeAndBytes(e, index, tree, cells, dump, viewport) {
     }
     current = tree.rows[id].line;
     current.classList.add('selected');
-    if (fromBytes) revealWithin(tree.root, current.querySelector('.field-name'));
-    else revealWithin(viewport, lit[0]);
+    if (fromBytes) {
+      revealWithin(tree.root, current.querySelector('.field-name'));
+    } else if (lit[0]) {
+      // Show where the selection starts: bring the byte viewport into the panel if it is out of
+      // sight, then put the first selected byte one row below the viewport's top edge.
+      const panel = viewport.closest('.hex-panel');
+      if (panel) revealTop(panel, viewport, 8);
+      revealTop(viewport, lit[0], lit[0].getBoundingClientRect().height);
+    }
   };
   dump.addEventListener('click', (ev) => {
     const cell = ev.target.closest('[data-i]');
@@ -189,6 +212,45 @@ function linkTreeAndBytes(e, index, tree, cells, dump, viewport) {
     if (id !== null) select(id, { fromBytes: true });
   });
   return select;
+}
+
+// ---- our own checks (computed results, not network events) ------------------------------------
+
+const CHECK_STATUS = {
+  passed: ['✓', 'пройдена'],
+  failed: ['✗', 'не пройдена'],
+  unavailable: ['?', 'проверить невозможно'],
+};
+const statusOf = (status) => CHECK_STATUS[status] ?? ['?', 'неизвестный результат'];
+
+function checkItem(c) {
+  const [mark, word] = statusOf(c.status);
+  const item = el('div', `check check-${c.status}`);
+  item.append(el('h3', 'check-title', `${mark} ${c.title}: ${word}`));
+  if (c.explanation) item.append(el('p', 'check-text', `Что проверено: ${c.explanation}`));
+  if (c.reason) item.append(el('p', 'check-reason', `Причина: ${c.reason}`));
+  if (c.steps.length > 0) {
+    const list = el('ul', 'check-steps');
+    for (const s of c.steps) {
+      const step = el('li', `check-${s.status}`, `${statusOf(s.status)[0]} ${s.label}`);
+      if (s.reason && s.status !== 'passed') step.append(el('span', 'check-reason', ` — ${s.reason}`));
+      list.append(step);
+    }
+    item.append(list);
+  }
+  if (c.notCovered.length > 0) item.append(el('p', 'check-text', `Не входит в эту проверку: ${c.notCovered.join('; ')}.`));
+  return item;
+}
+
+function checksBlock(checks) {
+  const box = el('details', 'checks'); // collapsed: the status line is enough until asked for more
+  const marks = checks.map((c) => `${statusOf(c.status)[0]} ${c.title} — ${statusOf(c.status)[1]}`).join(' · ');
+  box.append(
+    el('summary', 'checks-summary', `Проверки: ${marks}`),
+    el('p', 'check-note', 'Вычислено по записанным байтам этой сессии. Это не сетевое событие и не результат проверки сертификата, которую Node выполнил при соединении.'),
+    ...checks.map(checkItem),
+  );
+  return box;
 }
 
 function showDetail(e, bytes, fields) {
@@ -214,6 +276,7 @@ function showDetail(e, bytes, fields) {
   title.title = e.summary;
   const meta = el('p', 'hex-meta', `${formatRange(e)} · ${e.layer.toUpperCase()} ${e.kind}`);
   header.append(toolbar, title, meta);
+  if (e.checks?.length) header.append(checksBlock(e.checks));
   if (!bytes) {
     panel.replaceChildren(header, el('p', 'hex-hint', 'У этого события нет записанных байтов (например, SYN/ACK делает ОС, Node их не видит).'));
     return;
@@ -234,8 +297,8 @@ function showDetail(e, bytes, fields) {
   let select = () => {};
   const tree = fieldTree(index, (id) => select(id));
   select = linkTreeAndBytes(e, index, tree, cells, dump, viewport);
-  const hint = el('p', 'hex-hint', 'Клик по полю подсвечивает его байты; клик по байту — его поле.');
-  content.append(tree.root, hint, viewport);
+  header.append(el('p', 'hex-hint', 'Клик по полю подсвечивает его байты; клик по байту — его поле.'));
+  content.append(tree.root, viewport); // two blocks only, so they can sit side by side in full-width mode
   panel.replaceChildren(header, content);
 }
 

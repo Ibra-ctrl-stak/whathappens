@@ -92,7 +92,7 @@ test('timeline.json carries the events and nothing secret', async () => {
   assert.match(res.headers['content-type'], /^application\/json/);
   const view = JSON.parse(res.body);
   assert.equal(view.events.length, timeline.events.length);
-  assert.deepEqual(Object.keys(view.events[0]).sort(), ['buffer', 'damaged', 'dir', 'kind', 'layer', 'length', 'offset', 'problem', 'summary', 't'].sort());
+  assert.deepEqual(Object.keys(view.events[0]).sort(), ['buffer', 'checks', 'damaged', 'dir', 'kind', 'layer', 'length', 'offset', 'problem', 'summary', 't'].sort());
   for (const line of golden.tls.keylog) assert.ok(!res.body.includes(line.split(' ')[2]), 'no session secret');
   assert.ok(!res.body.includes(golden.tls.raw[0].hex.slice(0, 64)), 'no raw wire bytes');
   assert.ok(!/keylog/i.test(res.body));
@@ -211,4 +211,23 @@ test('no field tree contains a session secret', () => {
   const fieldsOf = eventFields(timeline);
   const all = JSON.stringify(timeline.events.map((_, i) => fieldsOf(i)));
   for (const line of golden.tls.keylog) assert.ok(!all.includes(line.split(' ')[2]));
+});
+
+const CHECK_KEYS = ['explanation', 'id', 'notCovered', 'reason', 'status', 'steps', 'title'];
+const STEP_KEYS = ['label', 'reason', 'status'];
+
+test('timeline.json carries our check results on exactly two events, allow-listed keys only, no secrets', async () => {
+  const res = await request(`${page()}timeline.json`);
+  const view = JSON.parse(res.body);
+  const withChecks = view.events.filter((e) => e.checks !== null);
+  assert.deepEqual(withChecks.map((e) => e.summary), ['Certificate', 'CertificateVerify']);
+  assert.ok(view.events.every((e) => 'checks' in e));
+  for (const e of withChecks) {
+    for (const c of e.checks) {
+      assert.deepEqual(Object.keys(c).sort(), CHECK_KEYS);
+      assert.equal(c.status, 'passed');
+      for (const s of c.steps) assert.deepEqual(Object.keys(s).sort(), STEP_KEYS);
+    }
+  }
+  for (const line of golden.tls.keylog) assert.ok(!res.body.includes(line.split(' ')[2]), 'no session secret');
 });

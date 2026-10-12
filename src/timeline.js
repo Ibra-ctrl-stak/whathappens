@@ -11,6 +11,7 @@ import { field } from './fields.js';
 import { httpFields, httpResponseFields } from './http/fields.js';
 import { recordFields } from './tls/record-fields.js';
 import { parseHandshake } from './tls/handshake-fields.js';
+import { handshakeChecks } from './tls/certificates.js';
 import { printable, printableDeep } from './text.js';
 
 const RECORD_HEADER_LEN = 5;
@@ -28,7 +29,10 @@ const HTTP_KINDS = Object.freeze({
 });
 
 // fields: the parsed field tree of exactly this event's bytes, or null when nothing was parsed.
-const event = (props) => ({ dir: null, buffer: null, offset: 0, length: 0, detail: {}, fields: null, damaged: false, problem: null, ...props });
+// checks: results of our own verifications about this event (see serverChecks), or null.
+const event = (props) => ({ dir: null, buffer: null, offset: 0, length: 0, detail: {}, fields: null, checks: null, damaged: false, problem: null, ...props });
+const CERTIFICATE_MESSAGE = 11;
+const CERTIFICATE_VERIFY_MESSAGE = 15;
 const bytesEvent = (buffer, bytes, fields) => event({ buffer, offset: 0, length: bytes.length, ...fields });
 const damage = (problem) => ({ damaged: true, problem });
 
@@ -164,27 +168,45 @@ function undecodableStreams(tls, bounds, reason) {
  * One event per handshake message, over the direction's handshake stream (buffer tls-hs/<dir>),
  * timed by the record that delivered its last byte.
  */
-function handshakeMessageEvents(dir, side, bounds) {
+function handshakeMessageEvents(dir, side, bounds, checksFor = () => null) {
   return side.messages.map((m) => {
     const last = m.offset + m.length - 1;
     const r = side.records.find((rec) => rec.handshakeOffset !== undefined && last < rec.handshakeOffset + rec.content.length);
     const fields = parseHandshake(side.handshake, m);
     return event({
       at: timeAtByte(bounds[dir], recordEnd(r)), layer: 'tls', kind: 'handshake-message', dir, buffer: `tls-hs/${dir}`,
-      offset: m.offset, length: m.length, summary: fields.name, detail: { type: m.type }, fields,
+      offset: m.offset, length: m.length, summary: fields.name, detail: { type: m.type }, fields, checks: checksFor(m),
       ...(fields.problem ? damage(fields.problem) : {}),
     });
   });
 }
 
+/**
+ * Our own checks, attached to the server's Certificate and CertificateVerify messages. They are
+ * computed results, not traffic: no bytes or time of their own. A failure to compute them is
+ * reported as "unavailable", never as success, and never breaks the timeline.
+ */
+function serverChecks(decrypted) {
+  let checks;
+  try {
+    checks = handshakeChecks(decrypted);
+  } catch (err) {
+    const unavailable = (id, title) => ({ id, title, status: 'unavailable', explanation: '', reason: `could not run the check: ${err.message}`, steps: [], notCovered: [] });
+    checks = { chain: unavailable('certificate-chain', 'Certificate chain signatures'), certificateVerify: unavailable('certificate-verify', 'CertificateVerify signature') };
+  }
+  return (m) => (m.type === CERTIFICATE_MESSAGE ? [checks.chain] : m.type === CERTIFICATE_VERIFY_MESSAGE ? [checks.certificateVerify] : null);
+}
+
 function tlsPart(tls, decrypted, bounds, streams) {
   if (decrypted.error) return undecodableStreams(tls, bounds, decrypted.error);
   const sides = [['out', decrypted.client, 'client'], ['in', decrypted.server, 'server']];
+  const checksFor = serverChecks(decrypted);
   const records = sides.flatMap(([dir, side, name]) => {
     const trailing = decrypted.trailingBytes[name];
     const streamLength = bounds[dir].at(-1)?.end ?? 0;
     const tail = trailing > 0 ? [incompleteRecordEvent(dir, streamLength, trailing, bounds)] : [];
-    return [...side.records.map((r) => recordEvent(dir, r, bounds, streams)), ...tail, ...handshakeMessageEvents(dir, side, bounds)];
+    const messages = handshakeMessageEvents(dir, side, bounds, dir === 'in' ? checksFor : undefined);
+    return [...side.records.map((r) => recordEvent(dir, r, bounds, streams)), ...tail, ...messages];
   });
   const { protocol, cipher, alpn } = tls.info;
   const secure = event({ at: tls.times.secureAt, layer: 'tls', kind: 'secure', summary: `${protocol} ${cipher.standardName}, ALPN ${alpn}` });
@@ -360,7 +382,7 @@ export function buildTimeline(session) {
   const events = all
     .map((e, index) => ({
       t: roundUs(e.at - origin), ...e, index,
-      summary: printable(e.summary), problem: e.problem === null ? null : printable(e.problem), detail: printableDeep(e.detail), fields: printableDeep(e.fields),
+      summary: printable(e.summary), problem: e.problem === null ? null : printable(e.problem), detail: printableDeep(e.detail), fields: printableDeep(e.fields), checks: printableDeep(e.checks),
     }))
     .sort((a, b) => a.t - b.t || a.index - b.index)
     .map(({ index, ...e }) => e);

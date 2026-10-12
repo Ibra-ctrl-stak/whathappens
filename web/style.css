@@ -63,10 +63,12 @@ main.detail-wide .timeline { display: none; }
 
 .hide-dns .layer-dns, .hide-tcp .layer-tcp, .hide-tls .layer-tls, .hide-http .layer-http { display: none; }
 
-/* The panel itself never scrolls: only the tree and the byte viewport do. */
+/* The tree and the byte viewport scroll on their own and keep usable minimum heights. When the
+   window is too short for header + both of them, the panel itself scrolls instead of squeezing. */
 .hex-panel {
-  display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden;
+  display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow-x: hidden; overflow-y: auto;
   padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  --tree-min: 9rem; --hex-min: 14rem;
 }
 .detail-header { flex: 0 0 auto; min-width: 0; }
 .detail-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
@@ -76,9 +78,13 @@ main.detail-wide .timeline { display: none; }
 .detail-expand:focus-visible { outline: 2px solid var(--dns); outline-offset: 2px; }
 .hex-title { margin: 0 0 4px; font-size: 14px; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .hex-meta, .hex-hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-.detail-content { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; min-width: 0; overflow: hidden; }
+.detail-content {
+  /* basis 0: take the panel's remaining height (not the content's), but never less than the minimum */
+  display: flex; flex-direction: column; flex: 1 0 0; min-width: 0;
+  min-height: calc(var(--tree-min) + var(--hex-min) + 1.5rem);
+}
 .detail-content > .hex-hint { flex: 0 0 auto; }
-.hex-viewport { flex: 1 1 auto; min-height: 100px; min-width: 0; overflow: auto; overscroll-behavior: contain; border-top: 1px solid var(--line); padding-top: 8px; }
+.hex-viewport { flex: 1 1 60%; min-height: var(--hex-min); min-width: 0; overflow: auto; overscroll-behavior: contain; border-top: 1px solid var(--line); padding-top: 8px; }
 .hex-viewport:focus-visible { outline: 1px solid var(--muted); outline-offset: -1px; }
 .hex-dump { font-size: 12px; line-height: 1.6; width: max-content; padding: 0 6px 6px 0; }
 .hex-row { display: grid; grid-template-columns: 8ch 49ch 16ch; gap: 1ch; white-space: pre; }
@@ -96,7 +102,7 @@ main.detail-wide .timeline { display: none; }
 
 /* field tree (slice 3) */
 .field-tree, .field-children { list-style: none; margin: 0; padding: 0; }
-.field-tree { flex: 0 1 42%; min-height: 80px; overflow: auto; overscroll-behavior: contain; margin-bottom: 10px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.field-tree { flex: 0 1 40%; min-height: var(--tree-min); overflow: auto; overscroll-behavior: contain; margin-bottom: 10px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 .field-tree > li { width: max-content; min-width: 100%; }
 .field-children { padding-left: 14px; border-left: 1px solid var(--line); margin-left: 5px; }
 .field-row { display: flex; gap: 8px; align-items: baseline; padding: 1px 4px; cursor: pointer; white-space: nowrap; }
@@ -110,3 +116,26 @@ main.detail-wide .timeline { display: none; }
 .field-range { color: var(--muted); font-size: 12px; }
 .byte { cursor: pointer; }
 .byte.hl { background: #4a3f1f; color: #ffe2a8; border-radius: 2px; }
+
+/* our own checks in the detail header (computed results, not network events) */
+/* Collapsed by default: one status line. Opened, the details scroll within a capped height. */
+.checks { margin: 0 0 8px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px; }
+.checks[open] { max-height: 40vh; overflow: auto; overscroll-behavior: contain; }
+.checks-summary { cursor: pointer; color: var(--text); overflow-wrap: anywhere; }
+.check-note, .check-text { margin: 4px 0; color: var(--muted); overflow-wrap: anywhere; }
+.check { margin-top: 8px; }
+.check-title { margin: 0; font-size: 13px; }
+.check-passed .check-title, li.check-passed { color: var(--tcp); }
+.check-failed .check-title, li.check-failed, .check-reason { color: var(--bad); }
+.check-unavailable .check-title, li.check-unavailable { color: var(--tls); }
+.check-steps { margin: 4px 0; padding-left: 18px; overflow-wrap: anywhere; }
+
+/* Full-width mode on a wide screen: tree and bytes side by side, both the full panel height. */
+@media (width >= 1100px) {
+  main.detail-wide .detail-content { flex-direction: row; gap: 14px; }
+  main.detail-wide .field-tree {
+    flex: 0 0 min(42%, 46rem); min-height: var(--hex-min); margin: 0; padding: 0 10px 0 0;
+    border-bottom: 0; border-right: 1px solid var(--line);
+  }
+  main.detail-wide .hex-viewport { flex: 1 1 auto; border-top: 0; padding-top: 0; }
+}
