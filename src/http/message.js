@@ -102,16 +102,70 @@ function frameBody(kind, message, offset, available, buf) {
   };
 }
 
-/** Parse one HTTP/1.x message at the start of `buf` (latin1: header bytes map 1:1 to chars). */
-export function parseHttpMessage(buf) {
-  const text = buf.toString('latin1');
-  const headEnd = text.indexOf(HEAD_END);
-  if (headEnd < 0) throw new Error('HTTP head incomplete: no blank line yet');
-  const startEnd = text.indexOf(CRLF);
-  const { kind, fields } = parseStartLine(text.slice(0, startEnd));
+/**
+ * Start line + headers of the message beginning at `start`; every offset is absolute in `buf`
+ * (latin1: header bytes map 1:1 to chars). Throws if the head is incomplete or malformed.
+ */
+function parseHead(buf, start, text = buf.toString('latin1')) {
+  const headEnd = text.indexOf(HEAD_END, start);
+  if (headEnd < 0) throw new Error(`HTTP head incomplete at byte ${start}: no blank line yet`);
+  const startEnd = text.indexOf(CRLF, start);
+  const { kind, fields } = parseStartLine(text.slice(start, startEnd));
   const headerText = text.slice(startEnd + CRLF.length, headEnd);
   const headers = headerText ? parseHeaders(headerText, startEnd + CRLF.length) : [];
-  const head = { offset: 0, length: headEnd + HEAD_END.length };
-  const message = { kind, startLine: { offset: 0, length: startEnd, ...fields }, headers, head };
-  return { ...message, ...frameBody(kind, message, head.length, buf.length - head.length, buf) };
+  const head = { offset: start, length: headEnd + HEAD_END.length - start };
+  return { kind, startLine: { offset: start, length: startEnd - start, ...fields }, headers, head };
+}
+
+const headEndOf = (message) => message.head.offset + message.head.length;
+
+/** Parse one HTTP/1.x message (head and body framing) beginning at `start` in `buf`. */
+export function parseHttpMessage(buf, start = 0) {
+  const message = parseHead(buf, start);
+  const bodyAt = headEndOf(message);
+  return { ...message, ...frameBody(message.kind, message, bodyAt, buf.length - bodyAt, buf) };
+}
+
+// RFC 9110 §15.2: a server may send any number of 1xx responses before the final one; we cap it.
+export const MAX_INTERIM_RESPONSES = 16;
+const SWITCHING_PROTOCOLS = 101;
+
+/**
+ * The server's side of one request: interim (1xx) heads, then one final response (>= 200) with
+ * its body framing — or a 101 after which the bytes belong to another protocol.
+ * Returns { interim, final, switched, rest }: rest = { offset, length, problem } covers the bytes
+ * that could not be parsed (length 0 when the stream ended before the final response).
+ */
+export function parseHttpResponses(buf) {
+  const interim = [];
+  const stop = (offset, problem, extra = {}) => ({ interim, final: null, switched: null, rest: { offset, length: buf.length - offset, problem }, ...extra });
+  const text = buf.toString('latin1'); // once for the whole stream, not per response
+  let pos = 0;
+  while (pos < buf.length) {
+    let head;
+    try {
+      head = parseHead(buf, pos, text);
+    } catch (err) {
+      return stop(pos, err.message);
+    }
+    const { status } = head.startLine;
+    if (head.kind !== 'response') return stop(pos, `expected an HTTP response at byte ${pos}, got a request line`);
+    if (status < 100) return stop(pos, `invalid status code ${status} at byte ${pos}`);
+    const end = headEndOf(head);
+    if (status === SWITCHING_PROTOCOLS) {
+      const rest = end < buf.length
+        ? { offset: end, length: buf.length - end, problem: '101 Switching Protocols: these bytes belong to the new protocol and are not parsed as HTTP' }
+        : null;
+      return { interim, final: null, switched: head, rest };
+    }
+    if (status >= 200) {
+      return { interim, final: { ...head, ...frameBody('response', head, end, buf.length - end, buf) }, switched: null, rest: null };
+    }
+    if (interim.length === MAX_INTERIM_RESPONSES) {
+      return stop(pos, `more than ${MAX_INTERIM_RESPONSES} interim (1xx) responses; the rest is not parsed`);
+    }
+    interim.push(head); // 1xx responses never have a body
+    pos = end;
+  }
+  return stop(buf.length, 'the connection ended before the final response');
 }

@@ -45,6 +45,16 @@ assembled/decompressed bytes with offsets starting at zero. Corrupt or incomplet
 flagged and do not produce a decoded event. Decoding is limited to 4 MiB per intermediate/output
 buffer and 10,000 chunk iterations; trailers remain separate from response headers.
 
+Interim `1xx` responses before the final response (for example `103 Early Hints` or
+`100 Continue`) are parsed and shown as separate `interim-response` events; they have no body.
+Up to 16 interim responses are parsed; beyond that, the remaining bytes are flagged.
+`101 Switching Protocols` is shown as a `protocol-switch` event marked unsupported, and the bytes
+after it are not parsed as HTTP. Every response keeps absolute offsets in the received stream
+(`http/in`) and is timed by the TLS record that delivered its last byte. If a later response is
+truncated or malformed, the responses already parsed stay on the timeline and the remaining
+bytes become one event marked "damaged"; a stream that ends before the final response gets an
+empty "damaged" event that says so.
+
 ## Quick start
 
 Requires Node.js 24+. No dependencies or install step. From the project folder:
@@ -112,7 +122,7 @@ through a VPN, capture on the tunnel interface.
 - TLS 1.3 only (AES-GCM, ChaCha20-Poly1305), HTTP/1.1, IPv4 and A records.
 - Node cannot see the TCP layer (SYN/ACK, loss, retransmissions); an optional capture mode will
   add it (planned, see the plan).
-- Not supported yet: HelloRetryRequest, KeyUpdate, TLS 1.2, Brotli/deflate, transfer-coding chains, multiple HTTP responses (including 1xx followed by a final response).
+- Not supported yet: HelloRetryRequest, KeyUpdate, TLS 1.2, Brotli/deflate, transfer-coding chains, protocol upgrades after `101`, more than one final response on a connection (pipelining), HTTP/2.
 - Direct UDP/53 access to authoritative DNS servers is required for live mode; use `--demo`
   on networks that block it. HTTP-only targets and IP-literal URLs are not supported.
 - Some VPN clients block `127.0.0.1` for browsers — the page will not open then.

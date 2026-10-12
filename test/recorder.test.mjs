@@ -2,31 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import tls from 'node:tls';
-import { readFileSync } from 'node:fs';
 import { once } from 'node:events';
 import { recordHttpsGet } from '../src/tls/recorder.js';
 import { decryptSession } from '../src/tls/decrypt.js';
-
-// Public, localhost-only test credentials. Never used for a real site.
-const cert = readFileSync(new URL('fixtures/localhost-tls/cert.pem', import.meta.url));
-const key = readFileSync(new URL('fixtures/localhost-tls/key.pem', import.meta.url));
-
-async function listen(t, server) {
-  const sockets = new Set();
-  server.on('connection', (socket) => {
-    sockets.add(socket);
-    socket.on('error', () => {});
-    socket.once('close', () => sockets.delete(socket));
-  });
-  server.on('tlsClientError', () => {});
-  t.after(() => {
-    for (const socket of sockets) socket.destroy();
-    server.close();
-  });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  return { ip: '127.0.0.1', servername: 'localhost', port: server.address().port, ca: cert };
-}
+// Public, localhost-only test credentials and a loopback TLS server. Never used for a real site.
+import { cert, key, listen } from './helpers/local-tls.mjs';
 
 test('records and independently decrypts a real local TLS 1.3 request', async (t) => {
   let request = '';

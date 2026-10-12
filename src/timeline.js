@@ -5,10 +5,10 @@
 // damaged: true and a problem, over the bytes it occupies; the other layers stay intact.
 import { parseResponse, TYPE } from './dns/packet.js';
 import { decryptSession } from './tls/decrypt.js';
-import { parseHttpMessage, headerValue } from './http/message.js';
+import { parseHttpMessage, parseHttpResponses, headerValue } from './http/message.js';
 import { decodeHttpBody } from './http/body.js';
 import { field } from './fields.js';
-import { httpFields } from './http/fields.js';
+import { httpFields, httpResponseFields } from './http/fields.js';
 import { recordFields } from './tls/record-fields.js';
 import { parseHandshake } from './tls/handshake-fields.js';
 import { printable, printableDeep } from './text.js';
@@ -204,6 +204,8 @@ function headSummary(msg) {
   return `${msg.startLine.status} ${msg.startLine.reason}, ${headerValue(msg, 'content-type') ?? 'no content-type'}`;
 }
 
+const headEnd = (msg) => msg.head.offset + msg.head.length; // absolute, in the direction's stream
+
 function messageEvents(msg, tree, dir, buffer, timeAt) {
   const kinds = HTTP_KINDS[dir];
   const part = (name) => tree.children.find((f) => f.name === name) ?? null;
@@ -211,14 +213,14 @@ function messageEvents(msg, tree, dir, buffer, timeAt) {
     ? { headers: msg.headers.length, host: headerValue(msg, 'host') ?? null }
     : { status: msg.startLine.status, headers: msg.headers.length };
   const head = event({
-    at: timeAt(msg.head.length - 1), layer: 'http', kind: kinds.head, dir, buffer, ...msg.head, summary: headSummary(msg), detail, fields: part('head'),
+    at: timeAt(headEnd(msg) - 1), layer: 'http', kind: kinds.head, dir, buffer, ...msg.head, summary: headSummary(msg), detail, fields: part('head'),
   });
   const { body, extra, problems } = msg;
   const bodyProblem = problems.filter((p) => !/bytes after/.test(p)).join('; ') || null;
   const events = [head];
   if (body.length > 0 || bodyProblem) {
     events.push(event({
-      at: timeAt(Math.max(body.offset + body.length, msg.head.length) - 1), layer: 'http', kind: kinds.body, dir, buffer,
+      at: timeAt(Math.max(body.offset + body.length, headEnd(msg)) - 1), layer: 'http', kind: kinds.body, dir, buffer,
       offset: body.offset, length: body.length, summary: `body ${body.length} B (${body.framing})`,
       detail: { framing: body.framing, declaredLength: body.declaredLength, complete: body.complete },
       fields: part('body'), // null for a zero-length body flagged only for its problem
@@ -234,19 +236,9 @@ function messageEvents(msg, tree, dir, buffer, timeAt) {
   return events;
 }
 
-function httpDirection(dir, side, bounds, buffers) {
-  const data = side.appData;
-  if (data.length === 0) return [];
+/** Events of one complete message (head, body, extra) plus its decoded body, if any. */
+function fullMessageEvents(data, msg, tree, dir, timeAt, buffers) {
   const buffer = `http/${dir}`;
-  const timeAt = (pos) => plaintextTime(side, bounds, pos);
-  const tree = httpFields(data); // never throws: a broken message is one field with a problem
-  if (tree.problem) {
-    return [event({
-      at: timeAt(data.length - 1), layer: 'http', kind: 'message', dir, buffer, length: data.length,
-      summary: 'damaged HTTP message', fields: tree, ...damage(tree.problem),
-    })];
-  }
-  const msg = parseHttpMessage(data);
   const events = messageEvents(msg, tree, dir, buffer, timeAt);
   const decoded = decodeHttpBody(data, msg);
   const bodyEvent = events.find((e) => e.kind === HTTP_KINDS[dir].body);
@@ -255,7 +247,7 @@ function httpDirection(dir, side, bounds, buffers) {
   }
   if (decoded.problem && !bodyEvent) {
     events.push(event({
-      at: timeAt(msg.head.length - 1), layer: 'http', kind: HTTP_KINDS[dir].body,
+      at: timeAt(headEnd(msg) - 1), layer: 'http', kind: HTTP_KINDS[dir].body,
       dir, buffer, offset: msg.body.offset, length: msg.body.length,
       summary: 'body decoding unavailable', ...damage(decoded.problem),
     }));
@@ -264,7 +256,7 @@ function httpDirection(dir, side, bounds, buffers) {
     const id = `http-decoded/${dir}`;
     buffers.push([id, decoded.bytes]);
     events.push(event({
-      at: timeAt(Math.max(msg.body.offset + msg.body.length, msg.head.length) - 1),
+      at: timeAt(Math.max(msg.body.offset + msg.body.length, headEnd(msg)) - 1),
       layer: 'http', kind: 'decoded-body', dir, buffer: id, length: decoded.bytes.length,
       summary: `decoded body ${decoded.bytes.length} B (chunked/gzip removed; derived bytes)`,
       fields: field('decoded_body', 0, decoded.bytes.length),
@@ -273,10 +265,68 @@ function httpDirection(dir, side, bounds, buffers) {
   return events;
 }
 
+/** Our request: one message in http/out. */
+function requestEvents(side, bounds, buffers) {
+  const data = side.appData;
+  if (data.length === 0) return [];
+  const timeAt = (pos) => plaintextTime(side, bounds, pos);
+  const tree = httpFields(data); // never throws: a broken message is one field with a problem
+  if (tree.problem) {
+    return [event({
+      at: timeAt(data.length - 1), layer: 'http', kind: 'message', dir: 'out', buffer: 'http/out', length: data.length,
+      summary: 'damaged HTTP message', fields: tree, ...damage(tree.problem),
+    })];
+  }
+  return fullMessageEvents(data, parseHttpMessage(data), tree, 'out', timeAt, buffers);
+}
+
+/** A head-only response (1xx): one event over its head. */
+function headOnlyEvent(msg, node, kind, summary, timeAt, extra = {}) {
+  return event({
+    at: timeAt(headEnd(msg) - 1), layer: 'http', kind, dir: 'in', buffer: 'http/in', ...msg.head, summary,
+    detail: { status: msg.startLine.status, headers: msg.headers.length }, fields: node.children[0], ...extra,
+  });
+}
+
+/** Bytes after the last parsed response that could not be parsed (or an empty marker at the end). */
+function unparsedEvent(rest, node, dataLength, timeAt) {
+  return event({
+    at: timeAt(Math.min(rest.offset + rest.length, dataLength) - 1), layer: 'http', kind: 'message', dir: 'in',
+    buffer: 'http/in', offset: rest.offset, length: rest.length, fields: node ?? null,
+    summary: rest.length > 0 ? `${rest.length} B not parsed as HTTP` : 'no final response', ...damage(rest.problem),
+  });
+}
+
+/**
+ * The server's side: interim (1xx) heads, then the final response with body and decoded body;
+ * a 101 is shown and not followed. Earlier responses survive a broken or truncated later one.
+ */
+function responseEvents(side, bounds, buffers) {
+  const data = side.appData;
+  if (data.length === 0) return [];
+  const timeAt = (pos) => plaintextTime(side, bounds, pos);
+  const seq = parseHttpResponses(data);
+  const tree = httpResponseFields(data, seq);
+  const nodes = new Map(tree.children.map((n) => [n.offset, n]));
+  const events = seq.interim.map((m) => headOnlyEvent(m, nodes.get(m.head.offset), 'interim-response',
+    `${m.startLine.status} ${m.startLine.reason} (interim response, no body)`, timeAt));
+  if (seq.switched) {
+    const m = seq.switched;
+    events.push(headOnlyEvent(m, nodes.get(m.head.offset), 'protocol-switch', `${m.startLine.status} ${m.startLine.reason}`, timeAt,
+      damage('101 Switching Protocols: switching to another protocol is not supported')));
+  }
+  if (seq.final) {
+    const node = nodes.get(seq.final.head.offset);
+    events.push(...fullMessageEvents(data, seq.final, node, 'in', timeAt, buffers));
+  }
+  if (seq.rest) events.push(unparsedEvent(seq.rest, seq.rest.length > 0 ? nodes.get(seq.rest.offset) : null, data.length, timeAt));
+  return events;
+}
+
 function httpPart(decrypted, bounds) {
   if (decrypted.error) return { buffers: [], events: [] };
   const buffers = [['http/out', decrypted.client.appData], ['http/in', decrypted.server.appData]];
-  const events = [...httpDirection('out', decrypted.client, bounds.out, buffers), ...httpDirection('in', decrypted.server, bounds.in, buffers)];
+  const events = [...requestEvents(decrypted.client, bounds.out, buffers), ...responseEvents(decrypted.server, bounds.in, buffers)];
   return { buffers, events };
 }
 
