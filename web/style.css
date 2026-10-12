@@ -139,3 +139,7 @@ main.detail-wide .timeline { display: none; }
   }
   main.detail-wide .hex-viewport { flex: 1 1 auto; border-top: 0; padding-top: 0; }
 }
+
+/* packets from an optional capture: marked apart from Node socket reads/writes */
+.event.from-capture .kind::after { content: " · захват"; color: var(--tcp); }
+.event.from-capture { box-shadow: inset 2px 0 0 var(--tcp); }

@@ -16,7 +16,7 @@ function el(tag, className, text) {
   return node;
 }
 
-const formatMs = (t) => `${t.toFixed(1)} мс`;
+const formatMs = (t) => (t === null ? 'время не выровнено' : `${t.toFixed(1)} мс`);
 const formatRange = (e) => (e.buffer ? `${e.buffer} [${e.offset}, ${e.length}]` : 'байтов нет');
 
 // ---- event list ------------------------------------------------------------------------------
@@ -44,13 +44,14 @@ function renderFilters(list) {
 function timeBar(e, durationMs) {
   const track = el('span', 'track');
   const dot = el('span', 'dot');
+  if (e.t === null) { track.title = 'нет общего времени с записью'; return track; } // unaligned capture: no dot
   dot.style.left = `${durationMs > 0 ? (e.t / durationMs) * 100 : 0}%`; // CSSOM, allowed by the CSP
   track.append(dot);
   return track;
 }
 
 function row(e, durationMs) {
-  const item = el('li', `event layer-${e.layer}${e.damaged ? ' damaged' : ''}`);
+  const item = el('li', `event layer-${e.layer}${e.damaged ? ' damaged' : ''}${e.capture ? ' from-capture' : ''}`);
   item.dataset.layer = e.layer;
   const what = el('span', 'what');
   what.title = e.summary;
@@ -253,6 +254,45 @@ function checksBlock(checks) {
   return box;
 }
 
+// ---- data from an optional pcapng capture (real packets, not Node socket reads/writes) ---------
+
+const line = (text) => el('p', 'check-text', text);
+
+function segmentLines(c) {
+  const opts = Object.entries(c.options ?? {}).filter(([, v]) => v !== null && v !== false).map(([k, v]) => (v === true ? k : `${k}=${v}`));
+  const mapping = c.mapping.status === 'matches'
+    ? `байты данных совпадают с записанным потоком: [${c.mapping.offset}, ${c.mapping.length}]`
+    : c.mapping.status === 'none' ? 'данных нет' : `байты данных не привязаны: ${c.mapping.status}${c.mapping.reason ? ` (${c.mapping.reason})` : ''}`;
+  return [
+    line(`Кадр ${c.frame} захвата — реальный TCP-сегмент, не чтение/запись сокета Node.`),
+    line(`Флаги: ${c.flags.join(', ') || 'нет'} · seq ${c.seq ?? `raw ${c.rawSeq}`} · ack ${c.ack ?? (c.rawAck === null ? '—' : `raw ${c.rawAck}`)} · окно ${c.window} · данных ${c.payloadLength} B${opts.length ? ` · опции: ${opts.join(', ')}` : ''}`),
+    line(`Время по часам захвата: ${c.captureTime}; сдвиг к часам записи: ${c.offsetMs.toFixed(3)} мс.`),
+    line(mapping),
+    ...c.notes.map((n) => el('p', 'check-reason', `Наблюдение: ${n}`)),
+    line('Заголовки IP/TCP пока показаны без дерева полей.'),
+  ];
+}
+
+function overviewLines(c) {
+  return [
+    line(`Сопоставление: ${c.status} — ${c.reason}`),
+    ...(c.alignment ? [line(`Время: ${c.alignment.status}. ${c.alignment.rule}`)] : []),
+    ...(c.alignment?.warning ? [el('p', 'check-reason', c.alignment.warning)] : []),
+    ...(c.connection ? [line(`Пакетов соединения: ${c.connection.packets}; кандидатов: ${c.connection.candidates}; ${c.connection.anchors.join('; ')}`)] : []),
+    ...(c.counts ? [line(`Сегментов ${c.counts.segments}, с проверенными байтами ${c.counts.matched}, не совпадают ${c.counts.notMatching}; повторы ${c.counts.repeated}, вне порядка ${c.counts.outOfOrder}, перекрытия ${c.counts.overlapping}, пропуски ${c.counts.gaps}.`)] : []),
+    ...(c.reader ? [line(`Прочитано пакетов: ${c.reader.packets}${c.reader.truncated ? ' (файл оборван, прочитанное сохранено)' : ''}; пропущено: ${Object.entries(c.reader.skipped).map(([k, v]) => `${k} — ${v}`).join('; ') || 'нет'}.`)] : []),
+    ...(c.reader?.problems ?? []).map((p) => el('p', 'check-reason', `Читатель: ${p}`)),
+  ];
+}
+
+function captureBlock(c) {
+  const box = el('details', 'checks capture-info');
+  box.append(el('summary', 'checks-summary', 'frame' in c ? `Захват: кадр ${c.frame}, ${c.flags.join(', ') || 'без флагов'}` : `Захват: ${c.status}`),
+    ...('frame' in c ? segmentLines(c) : overviewLines(c)));
+  box.open = true;
+  return box;
+}
+
 function showDetail(e, bytes, fields) {
   const panel = document.getElementById('hex');
   const header = el('div', 'detail-header');
@@ -277,6 +317,7 @@ function showDetail(e, bytes, fields) {
   const meta = el('p', 'hex-meta', `${formatRange(e)} · ${e.layer.toUpperCase()} ${e.kind}`);
   header.append(toolbar, title, meta);
   if (e.checks?.length) header.append(checksBlock(e.checks));
+  if (e.capture) header.append(captureBlock(e.capture));
   if (!bytes) {
     panel.replaceChildren(header, el('p', 'hex-hint', 'У этого события нет записанных байтов (например, SYN/ACK делает ОС, Node их не видит).'));
     return;

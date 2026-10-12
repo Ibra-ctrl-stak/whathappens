@@ -92,7 +92,8 @@ test('timeline.json carries the events and nothing secret', async () => {
   assert.match(res.headers['content-type'], /^application\/json/);
   const view = JSON.parse(res.body);
   assert.equal(view.events.length, timeline.events.length);
-  assert.deepEqual(Object.keys(view.events[0]).sort(), ['buffer', 'checks', 'damaged', 'dir', 'kind', 'layer', 'length', 'offset', 'problem', 'summary', 't'].sort());
+  assert.deepEqual(Object.keys(view.events[0]).sort(), ['buffer', 'capture', 'checks', 'damaged', 'dir', 'kind', 'layer', 'length', 'offset', 'problem', 'summary', 't'].sort());
+  assert.ok(view.events.every((e) => e.capture === null), 'no capture given: no capture data');
   for (const line of golden.tls.keylog) assert.ok(!res.body.includes(line.split(' ')[2]), 'no session secret');
   assert.ok(!res.body.includes(golden.tls.raw[0].hex.slice(0, 64)), 'no raw wire bytes');
   assert.ok(!/keylog/i.test(res.body));

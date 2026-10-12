@@ -13,9 +13,31 @@ const checkView = (c) => ({
   notCovered: [...(c.notCovered ?? [])],
 });
 
+const only = (obj, keys) => (obj ? Object.fromEntries(keys.map((k) => [k, obj[k] ?? null])) : null);
+
+/** Data of a captured TCP segment, or of the capture overview event. Never payload bytes. */
+function captureView(c) {
+  if ('frame' in c) {
+    return {
+      ...only(c, ['frame', 'flags', 'seq', 'rawSeq', 'ack', 'rawAck', 'window', 'payloadLength', 'captureTime', 'offsetMs']),
+      options: only(c.options, ['mss', 'windowScale', 'sackPermitted', 'sackBlocks', 'timestamps', 'malformed']),
+      mapping: only(c.mapping, ['status', 'offset', 'length', 'reason']),
+      notes: [...(c.notes ?? [])],
+    };
+  }
+  return {
+    ...only(c, ['status', 'reason']),
+    alignment: only(c.alignment, ['status', 'offsetMs', 'anchorFrame', 'rule', 'warning']),
+    reader: only(c.reader, ['packets', 'truncated', 'problems', 'skipped']),
+    connection: only(c.connection, ['firstFrame', 'packets', 'candidates', 'anchors']),
+    counts: c.counts ?? null,
+  };
+}
+
 const pick = (event) => ({
   ...Object.fromEntries(EVENT_KEYS.map((k) => [k, event[k]])),
   checks: event.checks ? event.checks.map(checkView) : null,
+  capture: event.capture ? captureView(event.capture) : null,
 });
 
 /** (index) -> the bytes of that event, or null when it has none / does not exist. */
@@ -55,7 +77,7 @@ export function eventFields(timeline) {
 export function timelineView(timeline) {
   const events = timeline.events.map(pick);
   return {
-    durationMs: events.reduce((max, e) => Math.max(max, e.t), 0),
+    durationMs: events.reduce((max, e) => (e.t === null ? max : Math.max(max, e.t)), 0), // t null: unaligned capture
     events,
   };
 }

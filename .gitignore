@@ -11,3 +11,4 @@ sslkeys*
 .env*
 session*.json
 !test/fixtures/**/session.json
+!test/fixtures/**/*.pcapng

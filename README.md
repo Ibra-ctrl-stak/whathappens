@@ -103,6 +103,39 @@ With Wireshark installed (tshark/dumpcap): capture while `node day1.mjs` runs, t
 streams, the handshake, and Wireshark's own decryption using our keylog. If your traffic goes
 through a VPN, capture on the tunnel interface.
 
+## TCP segments from a capture (optional)
+
+Node only sees socket reads and writes. To see the real TCP segments of a recorded request,
+capture it with Wireshark/dumpcap while it runs (on a VPN, on the tunnel interface), save as
+pcapng, then open the recording with the capture:
+
+```sh
+node cli.mjs --session out/run-XXXXXX/session.json --pcap capture.pcapng
+node cli.mjs --demo --pcap test/fixtures/github-robots/capture.pcapng   # bundled example
+```
+
+- **Matching:** packets between the recording's local and remote address:port, both directions.
+  If several connections share that pair, one is chosen only when its client bytes match the
+  recording; otherwise nothing is chosen and the reason is shown.
+- **Segments:** each packet becomes a `segment` event (flags, sequence/ack relative to the first
+  data byte, window, options, payload length), marked apart from socket events. Payload is tied to
+  the recorded `tcp/out|in` bytes only where it matches them byte for byte; otherwise it is shown
+  as "does not match the recorded stream" without bytes. SYN/ACK/FIN without payload have no bytes.
+  Sequence wraparound, a capture that starts mid-connection, and overlapping ranges are handled.
+- **Diagnostics are observations, not verdicts:** a gap means bytes have not appeared in the
+  capture yet (not proof of loss); a range seen again is "likely a retransmission (inferred)";
+  out-of-order arrival and partial overlaps are reported. These are our own heuristics and are
+  not promised to match Wireshark's `tcp.analysis.*`.
+- **Time:** the original capture time of every packet is kept. To place packets on the timeline,
+  capture times are shifted by one constant so that the packet with the first byte of the
+  ClientHello coincides with the moment Node wrote it; the packet actually leaves slightly later,
+  and clock drift is not corrected. Without that packet the capture clock is used as is and the
+  timeline says the time is not aligned.
+- **Reader limits:** pcapng only (classic pcap is refused), up to 64 MiB, 500,000 blocks, 200,000
+  packets; IPv4 + TCP over raw IP, Ethernet (incl. VLAN) or loopback; IP fragments are not
+  reassembled and not used; a file cut short keeps the packets read so far. IP/TCP headers have
+  no field tree yet.
+
 ## How it is verified
 
 - **Wireshark as an independent oracle.** The reference session matched a capture byte for byte
@@ -132,8 +165,9 @@ through a VPN, capture on the tunnel interface.
 ## Limitations
 
 - TLS 1.3 only (AES-GCM, ChaCha20-Poly1305), HTTP/1.1, IPv4 and A records.
-- Node cannot see the TCP layer (SYN/ACK, loss, retransmissions); an optional capture mode will
-  add it (planned, see the plan).
+- Node cannot see the TCP layer itself. Real TCP segments come only from a pcapng capture you add
+  with `--pcap` (see "TCP segments from a capture"); whathappens does not start a capture itself
+  yet. Without `--pcap`, TCP events are Node socket reads/writes, not segments.
 - Not supported yet: HelloRetryRequest, KeyUpdate, TLS 1.2, Brotli/deflate, transfer-coding chains, protocol upgrades after `101`, more than one final response on a connection (pipelining), HTTP/2.
 - Direct UDP/53 access to authoritative DNS servers is required for live mode; use `--demo`
   on networks that block it. HTTP-only targets and IP-literal URLs are not supported.

@@ -30,7 +30,8 @@ const HTTP_KINDS = Object.freeze({
 
 // fields: the parsed field tree of exactly this event's bytes, or null when nothing was parsed.
 // checks: results of our own verifications about this event (see serverChecks), or null.
-const event = (props) => ({ dir: null, buffer: null, offset: 0, length: 0, detail: {}, fields: null, checks: null, damaged: false, problem: null, ...props });
+// capture: data about a packet from an optional pcapng capture (see capturePart), or null.
+const event = (props) => ({ dir: null, buffer: null, offset: 0, length: 0, detail: {}, fields: null, checks: null, capture: null, damaged: false, problem: null, ...props });
 const CERTIFICATE_MESSAGE = 11;
 const CERTIFICATE_VERIFY_MESSAGE = 15;
 const bytesEvent = (buffer, bytes, fields) => event({ buffer, offset: 0, length: bytes.length, ...fields });
@@ -365,26 +366,68 @@ function decryptOrExplain(tls) {
 }
 
 /** session: as returned by loadSession(). */
-export function buildTimeline(session) {
+// ---- TCP segments from an optional capture ------------------------------------------------------
+
+function segmentSummary(s) {
+  const seq = s.flags.includes('SYN') ? `ISN=${s.rawSeq}` : `seq=${s.seq ?? `raw ${s.rawSeq}`}`;
+  const ack = s.ack !== null ? ` ack=${s.ack}` : s.rawAck !== null ? ` ack=raw ${s.rawAck}` : '';
+  const check = s.mapping.status === 'matches' || s.mapping.status === 'none' ? '' : ` — ${s.mapping.status}`;
+  return `captured packet #${s.frame}: ${s.flags.join(', ') || 'no flags'} ${seq}${ack} len=${s.payloadLength} win=${s.window}${check}`;
+}
+
+/**
+ * Real TCP segments of our connection, from analyzeCapture(...) (src/pcap/connection.js). Only
+ * verified payload ranges point into tcp/out|in; SYN/ACK/FIN without payload get no bytes.
+ */
+function capturePart(capture, tls) {
+  if (!capture) return { buffers: [], events: [] };
+  const { segments, alignment: align } = capture;
+  const summary = capture.status === 'matched'
+    ? `capture: ${segments.length} TCP segments of ${capture.reason}; time ${align.status === 'aligned' ? `aligned by frame ${align.anchorFrame}` : 'not aligned'}`
+    : `capture not used (${capture.status}): ${capture.reason}`;
+  // Without a reliable clock alignment, capture events get no place on the shared time axis
+  // (at: null): they are listed after the recording, in capture order, never at an invented time.
+  const aligned = align?.status === 'aligned';
+  const overview = event({
+    at: aligned ? segments[0].timeMs : null, layer: 'tcp', kind: 'capture', summary,
+    capture: { status: capture.status, reason: capture.reason, alignment: align, reader: capture.reader, connection: capture.connection ?? null, counts: capture.counts ?? null },
+  });
+  const events = segments.map((s) => {
+    const mapped = s.mapping.status === 'matches';
+    const { timeMs, ...data } = s;
+    return event({
+      at: aligned ? timeMs : null, layer: 'tcp', kind: 'segment', dir: s.dir, summary: segmentSummary(s), capture: data,
+      ...(mapped ? { buffer: `tcp/${s.dir}`, offset: s.mapping.offset, length: s.mapping.length } : {}),
+    });
+  });
+  return { buffers: [], events: [overview, ...events] };
+}
+
+/** session: loadSession(...) output; capture: optional analyzeCapture(...) result for this session. */
+export function buildTimeline(session, { capture = null } = {}) {
   const decrypted = decryptOrExplain(session.tls);
   const bounds = { out: chunkBounds(session.tls.raw, 'out'), in: chunkBounds(session.tls.raw, 'in') };
   // Parts are listed in layer order; with the index tie-break, equal times keep DNS < TCP < TLS < HTTP.
   const streams = { out: Buffer.concat(bounds.out.map((b) => b.bytes)), in: Buffer.concat(bounds.in.map((b) => b.bytes)) };
   const parts = [
-    dnsPart(session.dns), tcpPart(session.tls, bounds, streams), tlsPart(session.tls, decrypted, bounds, streams), httpPart(decrypted, bounds),
+    dnsPart(session.dns), tcpPart(session.tls, bounds, streams), capturePart(capture, session.tls), tlsPart(session.tls, decrypted, bounds, streams), httpPart(decrypted, bounds),
   ];
   const all = parts.flatMap((p) => p.events);
-  const missing = all.find((e) => !Number.isFinite(e.at));
+  // Only events from an unaligned capture may lack a time (see capturePart); anything else must have one.
+  const untimedAllowed = (e) => e.at === null && e.capture !== null;
+  const missing = all.find((e) => !Number.isFinite(e.at) && !untimedAllowed(e));
   if (missing) throw new Error(`${missing.layer}/${missing.kind} has no timestamp in this recording`);
 
-  const origin = all.reduce((min, e) => Math.min(min, e.at), Infinity); // no spread: sessions can have 100k+ events
+  const origin = all.reduce((min, e) => (e.at === null ? min : Math.min(min, e.at)), Infinity); // no spread: sessions can have 100k+ events
   // Single choke point: every summary/problem/detail string is made printable here.
-  const events = all
-    .map((e, index) => ({
-      t: roundUs(e.at - origin), ...e, index,
-      summary: printable(e.summary), problem: e.problem === null ? null : printable(e.problem), detail: printableDeep(e.detail), fields: printableDeep(e.fields), checks: printableDeep(e.checks),
-    }))
-    .sort((a, b) => a.t - b.t || a.index - b.index)
-    .map(({ index, ...e }) => e);
+  const prepared = all.map((e, index) => ({
+    t: e.at === null ? null : roundUs(e.at - origin), ...e, index,
+    summary: printable(e.summary), problem: e.problem === null ? null : printable(e.problem), detail: printableDeep(e.detail), fields: printableDeep(e.fields), checks: printableDeep(e.checks), capture: printableDeep(e.capture),
+  }));
+  // Timed events in time order, then untimed ones (unaligned capture) in their own capture order.
+  const events = [
+    ...prepared.filter((e) => e.t !== null).sort((a, b) => a.t - b.t || a.index - b.index),
+    ...prepared.filter((e) => e.t === null),
+  ].map(({ index, ...e }) => e);
   return { origin, buffers: Object.fromEntries(parts.flatMap((p) => p.buffers)), events };
 }

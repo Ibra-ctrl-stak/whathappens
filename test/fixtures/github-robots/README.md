@@ -25,3 +25,12 @@
 2. `node compare-wireshark.mjs` — должно быть `STEP 4: MATCH`.
 3. Скопировать `out/session.json` сюда и пересоздать оракул:
    `node tools/extract-expected.mjs out/capture.pcapng out/session.json out/keylog.txt > test/fixtures/github-robots/expected.json`
+
+## capture.pcapng / expected-capture.json
+
+`capture.pcapng` — пакеты **только этого соединения** (34 кадра) из захвата, сделанного во время
+записи на интерфейсе VPN-туннеля. Вырезано `tools/trim-pcapng.mjs`: новый файл с одной секцией без
+опций (нет сведений об ОС, устройстве, приложении), один интерфейс (raw IP, наносекунды), без
+комментариев. Посторонних пакетов нет (проверено tshark: одно TCP-соединение). Исходный захват в
+git не входит. `expected-capture.json` — поля каждого кадра по tshark
+(`tools/extract-capture-expected.mjs`), независимый оракул для разбора pcapng/TCP.

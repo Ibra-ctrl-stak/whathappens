@@ -4,6 +4,18 @@ import { readFile } from 'node:fs/promises';
 import { capture, saveRecording } from './src/capture.js';
 import { openViewer } from './src/viewer.js';
 import { printable } from './src/text.js';
+import { stat } from 'node:fs/promises';
+import { LIMITS } from './src/pcap/pcapng.js';
+
+/** A pcapng file, refused before reading when it exceeds the reader's size limit. */
+async function readCapture(file) {
+  let info;
+  try { info = await stat(file); } catch (err) {
+    throw new Error(err.code === 'ENOENT' ? 'Capture file not found. Check the --pcap path.' : `Cannot read the capture: ${err.message}`);
+  }
+  if (info.size > LIMITS.maxBytes) throw new Error(`The capture is larger than ${LIMITS.maxBytes / 1024 / 1024} MiB; cut it to this connection first (e.g. Wireshark: Export Specified Packets).`);
+  return readFile(file);
+}
 
 const HELP = `whathappens — watch your own HTTPS request, byte by byte.
 
@@ -15,6 +27,8 @@ Usage:
 Options:
   --demo             Open the bundled reference trace; no external requests
   --session <file>   Open a previously recorded session
+  --pcap <file>      With --session or --demo: add real TCP segments of that connection
+                     from a pcapng capture made during the recording (e.g. with Wireshark)
   --timeout <sec>    Total live-request deadline, 1–300 seconds (default: 30)
   --out <directory>  Save a new recording under this directory (default: out)
   --help, -h         Show this help
@@ -38,7 +52,7 @@ const stop = () => {
 
 async function main() {
   const { values, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
-    demo: { type: 'boolean' }, session: { type: 'string' },
+    demo: { type: 'boolean' }, session: { type: 'string' }, pcap: { type: 'string' },
     timeout: { type: 'string' }, out: { type: 'string' },
     help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' },
   } });
@@ -58,7 +72,8 @@ async function main() {
   if (!positionals.length && (values.timeout !== undefined || values.out !== undefined)) {
     throw new Error('--timeout and --out apply only to live requests.');
   }
-  if (values.session === '' || values.out === '') throw new Error('A file or directory path cannot be empty.');
+  if (values.session === '' || values.out === '' || values.pcap === '') throw new Error('A file or directory path cannot be empty.');
+  if (values.pcap !== undefined && positionals.length) throw new Error('--pcap applies to --session or --demo (a capture made during that recording).');
   const seconds = values.timeout ?? '30';
   if (!/^\d+$/.test(seconds) || Number(seconds) < 1 || Number(seconds) > 300) {
     throw new Error('--timeout must be a whole number from 1 to 300 seconds.');
@@ -82,9 +97,15 @@ async function main() {
     console.log(`Saved: ${printable(file)}`);
   }
   controller.signal.throwIfAborted();
-  viewer = await openViewer(session);
+  viewer = await openViewer(session, { capture: values.pcap === undefined ? null : await readCapture(values.pcap) });
   if (controller.signal.aborted) { viewer.close(); controller.signal.throwIfAborted(); }
   console.log(`whathappens: ${viewer.eventCount} events`);
+  if (viewer.capture) {
+    const c = viewer.capture;
+    console.log(printable(c.status === 'matched'
+      ? `Capture: ${c.segments} TCP segments (${c.reason}); time ${c.alignment === 'aligned' ? 'aligned by the ClientHello' : 'NOT aligned: capture clock used as is'}.`
+      : `Capture not used (${c.status}): ${c.reason}`));
+  }
   if (viewer.damagedCount) console.log(`${viewer.damagedCount} events could not be fully decoded; see their explanations on the timeline.`);
   console.log(`Open ${viewer.url}`);
   console.log('Local only. Press Ctrl+C to stop.');
