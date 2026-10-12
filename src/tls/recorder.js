@@ -1,128 +1,148 @@
-// TCP socket -> recording proxy Duplex -> tls.connect.
-// Captures ciphertext ("before TLS", what the wire sees) and plaintext ("after TLS").
+// TCP socket -> recording Duplex -> Node TLS. All traffic belongs to this request.
 import net from 'node:net';
 import tls from 'node:tls';
 import { Duplex } from 'node:stream';
 import { nowMs } from '../clock.js';
+import { validateHostname, validatePath } from '../target.js';
 
-const HTTPS_PORT = 443;
+export const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
 const SESSION_TIMEOUT_MS = 30000;
 
-/** Duplex that forwards to a TCP socket and records every chunk in both directions. */
 class RecordingDuplex extends Duplex {
   constructor(socket, onChunk) {
     super();
     this.socket = socket;
     this.onChunk = onChunk;
-    // No backpressure (pause/resume): the TLS wrapper over a JS Duplex stalls with it,
-    // and one recorded session is small enough to buffer.
+    // TLS over a JS Duplex stalls with pause/resume here. A byte budget bounds buffering.
     socket.on('data', (chunk) => {
-      this.onChunk('in', chunk);
-      this.push(chunk);
+      try { this.onChunk('in', chunk); this.push(chunk); }
+      catch (err) { this.destroy(err); }
     });
     socket.on('end', () => this.push(null));
-    // Without this the TLS socket never emits 'close' after the server hangs up.
     socket.on('close', () => this.destroy());
     socket.on('error', (err) => this.destroy(err));
   }
-
   _read() {}
-
   _write(chunk, _encoding, callback) {
-    this.onChunk('out', chunk);
-    this.socket.write(chunk, callback);
+    try { this.onChunk('out', chunk); this.socket.write(chunk, callback); }
+    catch (err) { callback(err); }
   }
-
-  _final(callback) {
-    this.socket.end(callback);
-  }
-
-  _destroy(err, callback) {
-    this.socket.destroy();
-    callback(err);
-  }
+  _final(callback) { this.socket.end(callback); }
+  _destroy(err, callback) { this.socket.destroy(); callback(err); }
 }
 
-function connectTcp(ip, port) {
+function connectTcp(ip, port, signal) {
+  signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const socket = net.connect({ host: ip, port });
-    socket.once('connect', () => resolve(socket));
-    socket.once('error', reject);
+    const abort = () => { socket.destroy(); reject(signal.reason); };
+    signal.addEventListener('abort', abort, { once: true });
+    socket.once('connect', () => {
+      signal.removeEventListener('abort', abort);
+      resolve(socket);
+    });
+    socket.once('error', (err) => {
+      signal.removeEventListener('abort', abort);
+      reject(err);
+    });
+    socket.once('close', () => signal.removeEventListener('abort', abort));
   });
 }
 
 /**
- * Open TLS 1.3 to ip:443 (SNI = servername), send one HTTP/1.1 GET, read until close.
- * Returns the raw wire chunks, the session keylog lines and the decrypted plaintext as seen by Node.
+ * Send one HTTP/1.1 GET over verified TLS 1.3. timeoutMs includes TCP connection time.
+ * maxBytes limits retained wire + plaintext bytes together. ca is an optional trust store
+ * (used by localhost tests); certificate verification is never disabled.
  */
-export async function recordHttpsGet({ ip, servername, path = '/' }) {
-  const raw = [];
-  const keylog = [];
-  const sentChunks = [];
-  const receivedChunks = [];
-  const record = (dir, chunk) => raw.push({ dir, at: nowMs(), bytes: Buffer.from(chunk) });
-  // Moments the OS reports to us; SYN/ACK/FIN segments themselves are not visible from Node.
-  const times = { connectStartedAt: nowMs(), connectedAt: null, secureAt: null, closedAt: null };
-
-  const tcp = await connectTcp(ip, HTTPS_PORT);
-  times.connectedAt = nowMs();
-  tcp.once('close', () => {
-    times.closedAt = nowMs();
-  });
-  const local = { address: tcp.localAddress, port: tcp.localPort };
-  const proxy = new RecordingDuplex(tcp, record);
-
-  const tlsInfo = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      secure.destroy();
-      reject(new Error(`TLS session did not finish in ${SESSION_TIMEOUT_MS}ms`));
-    }, SESSION_TIMEOUT_MS);
-    const secure = tls.connect({
-      socket: proxy,
-      servername,
-      minVersion: 'TLSv1.3',
-      ALPNProtocols: ['http/1.1'],
-    });
-    let info = null;
-    secure.on('keylog', (line) => keylog.push(line.toString('ascii').trim()));
-    secure.once('secureConnect', () => {
-      times.secureAt = nowMs();
-      info = {
-        protocol: secure.getProtocol(),
-        cipher: secure.getCipher(),
-        alpn: secure.alpnProtocol,
-        authorized: secure.authorized,
-        authorizationError: secure.authorizationError ?? null,
-      };
-      const request = Buffer.from(
-        `GET ${path} HTTP/1.1\r\nHost: ${servername}\r\nUser-Agent: whathappens/0.0.1\r\n` +
-          'Accept: */*\r\nConnection: close\r\n\r\n',
-        'ascii',
-      );
-      sentChunks.push(request);
-      secure.write(request);
-    });
-    secure.on('data', (chunk) => receivedChunks.push(Buffer.from(chunk)));
-    secure.once('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    secure.once('close', () => {
-      clearTimeout(timer);
-      if (info) resolve(info);
-      else reject(new Error('connection closed before the TLS handshake completed'));
-    });
-  });
-
-  return {
-    ip,
-    port: HTTPS_PORT,
-    servername,
-    local,
-    tls: tlsInfo,
-    times,
-    raw,
-    keylog,
-    plaintext: { sent: Buffer.concat(sentChunks), received: Buffer.concat(receivedChunks) },
+export async function recordHttpsGet({
+  ip, servername, path = '/', port = 443, timeoutMs = SESSION_TIMEOUT_MS,
+  maxBytes = DEFAULT_MAX_BYTES, signal, ca,
+}) {
+  validateHostname(servername);
+  validatePath(path);
+  if (!net.isIPv4(ip)) throw new Error('The recorder needs an IPv4 address from DNS.');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid HTTPS port.');
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) throw new Error('Invalid timeout.');
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('Invalid byte limit.');
+  signal?.throwIfAborted();
+  const deadline = new AbortController();
+  const activeSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
+  const timer = setTimeout(() => deadline.abort(new Error(`TCP/TLS request timed out after ${timeoutMs}ms.`)), timeoutMs);
+  const raw = [], keylog = [], sentChunks = [], receivedChunks = [];
+  let retainedBytes = 0;
+  const reserve = (length) => {
+    if (retainedBytes + length > maxBytes) throw new Error(`Recording byte limit exceeded (${maxBytes} bytes). Try a smaller resource.`);
+    retainedBytes += length;
   };
+  const record = (dir, chunk) => {
+    reserve(chunk.length);
+    raw.push({ dir, at: nowMs(), bytes: Buffer.from(chunk) });
+  };
+  const times = { connectStartedAt: nowMs(), connectedAt: null, secureAt: null, closedAt: null };
+  let tcp, proxy, secure;
+  try {
+    tcp = await connectTcp(ip, port, activeSignal);
+    activeSignal.throwIfAborted();
+    times.connectedAt = nowMs();
+    tcp.once('close', () => { times.closedAt ??= nowMs(); });
+    const local = { address: tcp.localAddress, port: tcp.localPort };
+    proxy = new RecordingDuplex(tcp, record);
+    const tlsInfo = await new Promise((resolve, reject) => {
+      let info = null;
+      const fail = (err) => {
+        reject(err);
+        secure?.destroy();
+        proxy.destroy();
+      };
+      const abort = () => fail(activeSignal.reason);
+      proxy.on('error', fail);
+      secure = tls.connect({
+        socket: proxy, servername, ca,
+        minVersion: 'TLSv1.3', maxVersion: 'TLSv1.3', ALPNProtocols: ['http/1.1'],
+      });
+      activeSignal.addEventListener('abort', abort, { once: true });
+      secure.on('keylog', (line) => {
+        try { reserve(line.length); keylog.push(line.toString('ascii').trim()); }
+        catch (err) { fail(err); }
+      });
+      secure.once('secureConnect', () => {
+        try {
+          times.secureAt = nowMs();
+          info = {
+            protocol: secure.getProtocol(), cipher: secure.getCipher(), alpn: secure.alpnProtocol,
+            authorized: secure.authorized, authorizationError: secure.authorizationError ?? null,
+          };
+          const authority = port === 443 ? servername : `${servername}:${port}`;
+          const request = Buffer.from(
+            `GET ${path} HTTP/1.1\r\nHost: ${authority}\r\nUser-Agent: whathappens/0.0.1\r\n` +
+            'Accept: */*\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n', 'ascii',
+          );
+          reserve(request.length);
+          sentChunks.push(request);
+          secure.write(request);
+        } catch (err) { fail(err); }
+      });
+      secure.on('data', (chunk) => {
+        try { reserve(chunk.length); receivedChunks.push(Buffer.from(chunk)); }
+        catch (err) { fail(err); }
+      });
+      secure.once('error', fail);
+      secure.once('close', () => {
+        activeSignal.removeEventListener('abort', abort);
+        times.closedAt ??= nowMs();
+        if (info) resolve(info);
+        else reject(new Error('Connection closed before the TLS 1.3 handshake completed.'));
+      });
+      if (activeSignal.aborted) abort();
+    });
+    return {
+      ip, port, servername, local, tls: tlsInfo, times, raw, keylog,
+      plaintext: { sent: Buffer.concat(sentChunks), received: Buffer.concat(receivedChunks) },
+    };
+  } finally {
+    clearTimeout(timer);
+    secure?.destroy();
+    proxy?.destroy();
+    tcp?.destroy();
+  }
 }

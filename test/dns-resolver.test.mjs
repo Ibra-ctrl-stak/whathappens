@@ -27,6 +27,20 @@ function fakeTransport(world) {
 
 const isRoot = (ip) => ROOT_SERVERS.some((s) => s.ip === ip);
 
+test('cancellation is not swallowed by nameserver retry/fallback', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  await assert.rejects(resolveA('example.com', {
+    signal: controller.signal,
+    transport: async () => {
+      calls += 1;
+      controller.abort(new Error('stop resolution'));
+      throw controller.signal.reason;
+    },
+  }), /stop resolution/);
+  assert.equal(calls, 1);
+});
+
 test('walks root -> TLD -> authoritative and returns the A record', async () => {
   const { transport, calls } = fakeTransport((ip) => {
     if (isRoot(ip)) return { authority: [NS('test', 'ns.tld.test')], additional: [A('ns.tld.test', '192.0.2.1')] };

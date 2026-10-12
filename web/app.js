@@ -53,6 +53,7 @@ function row(e, durationMs) {
   const item = el('li', `event layer-${e.layer}${e.damaged ? ' damaged' : ''}`);
   item.dataset.layer = e.layer;
   const what = el('span', 'what');
+  what.title = e.summary;
   what.append(el('span', 'summary', e.summary));
   if (e.damaged) what.append(el('span', 'problem', `повреждено: ${e.problem}`));
   item.append(
@@ -149,7 +150,20 @@ function fieldTree(index, onSelect) {
 
 // ---- selection: field <-> bytes ---------------------------------------------------------------
 
-function linkTreeAndBytes(e, index, tree, cells, dump) {
+// Reveal an item inside one scroller, without moving the page or a sibling pane.
+function revealWithin(scroller, node) {
+  if (!node) return;
+  const box = scroller.getBoundingClientRect();
+  const target = node.getBoundingClientRect();
+  const top = box.top + scroller.clientTop;
+  const left = box.left + scroller.clientLeft;
+  if (target.top < top) scroller.scrollTop -= top - target.top;
+  else if (target.bottom > top + scroller.clientHeight) scroller.scrollTop += target.bottom - top - scroller.clientHeight;
+  if (target.left < left) scroller.scrollLeft -= left - target.left;
+  else if (target.right > left + scroller.clientWidth) scroller.scrollLeft += target.right - left - scroller.clientWidth;
+}
+
+function linkTreeAndBytes(e, index, tree, cells, dump, viewport) {
   let lit = [];
   let current = null;
   const select = (id, { fromBytes = false } = {}) => {
@@ -166,8 +180,8 @@ function linkTreeAndBytes(e, index, tree, cells, dump) {
     }
     current = tree.rows[id].line;
     current.classList.add('selected');
-    current.scrollIntoView({ block: 'nearest' });
-    if (!fromBytes) lit[0]?.scrollIntoView({ block: 'nearest' });
+    if (fromBytes) revealWithin(tree.root, current.querySelector('.field-name'));
+    else revealWithin(viewport, lit[0]);
   };
   dump.addEventListener('click', (ev) => {
     const cell = ev.target.closest('[data-i]');
@@ -179,23 +193,50 @@ function linkTreeAndBytes(e, index, tree, cells, dump) {
 
 function showDetail(e, bytes, fields) {
   const panel = document.getElementById('hex');
+  const header = el('div', 'detail-header');
+  const toolbar = el('div', 'detail-toolbar');
+  const space = e.buffer?.startsWith('http-decoded/') ? 'Декодированное тело HTTP · отдельные смещения'
+    : e.buffer?.startsWith('tls-hs/') ? 'Собранные сообщения TLS'
+    : e.buffer?.startsWith('http/') ? 'Расшифрованный HTTP'
+      : e.buffer ? 'Сетевые байты' : 'Событие соединения';
+  const expand = el('button', 'detail-expand');
+  expand.type = 'button';
+  const main = document.querySelector('main');
+  const updateExpand = () => {
+    const wide = main.classList.contains('detail-wide');
+    expand.textContent = wide ? 'Вернуть список' : 'На всю ширину';
+    expand.setAttribute('aria-pressed', String(wide));
+  };
+  expand.addEventListener('click', () => { main.classList.toggle('detail-wide'); updateExpand(); });
+  updateExpand();
+  toolbar.append(el('span', 'byte-space', space), expand);
   const title = el('h2', 'hex-title', e.summary);
+  title.title = e.summary;
   const meta = el('p', 'hex-meta', `${formatRange(e)} · ${e.layer.toUpperCase()} ${e.kind}`);
+  header.append(toolbar, title, meta);
   if (!bytes) {
-    panel.replaceChildren(title, meta, el('p', 'hex-hint', 'У этого события нет записанных байтов (например, SYN/ACK делает ОС, Node их не видит).'));
+    panel.replaceChildren(header, el('p', 'hex-hint', 'У этого события нет записанных байтов (например, SYN/ACK делает ОС, Node их не видит).'));
     return;
   }
   const { dump, cells } = hexDump(bytes, e.offset);
+  const content = el('div', 'detail-content');
+  const viewport = el('div', 'hex-viewport');
+  viewport.tabIndex = 0;
+  viewport.setAttribute('role', 'region');
+  viewport.setAttribute('aria-label', 'Байты события: hex и ASCII');
+  viewport.append(dump);
   if (!fields) {
-    panel.replaceChildren(title, meta, el('p', 'hex-hint', 'Поля этого события не разобраны.'), dump);
+    content.append(el('p', 'hex-hint', 'Поля этого события не разобраны.'), viewport);
+    panel.replaceChildren(header, content);
     return;
   }
   const index = indexTree(fields);
   let select = () => {};
   const tree = fieldTree(index, (id) => select(id));
-  select = linkTreeAndBytes(e, index, tree, cells, dump);
+  select = linkTreeAndBytes(e, index, tree, cells, dump, viewport);
   const hint = el('p', 'hex-hint', 'Клик по полю подсвечивает его байты; клик по байту — его поле.');
-  panel.replaceChildren(title, meta, tree.root, hint, dump);
+  content.append(tree.root, hint, viewport);
+  panel.replaceChildren(header, content);
 }
 
 // ---- loading ----------------------------------------------------------------------------------

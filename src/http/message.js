@@ -1,5 +1,6 @@
 // HTTP/1.1 message head parser (RFC 9112) that keeps a byte range for every piece.
-// The body is located and framed, not decoded: chunked/gzip decoding comes later.
+// Content decoding is separate; these ranges always address the wire representation.
+import { parseChunked } from './chunked.js';
 
 const CRLF = '\r\n';
 const HEAD_END = '\r\n\r\n';
@@ -35,7 +36,7 @@ const DECIMAL = /^\d+$/;
 
 /** Body by Content-Length: never longer than declared; leftovers and shortfalls are reported. */
 function frameByLength(declared, offset, available) {
-  if (!DECIMAL.test(declared)) {
+  if (!DECIMAL.test(declared) || !Number.isSafeInteger(Number(declared))) {
     return {
       body: { offset, length: available, framing: 'invalid', declaredLength: null, complete: null },
       extra: null,
@@ -56,10 +57,36 @@ function frameByLength(declared, offset, available) {
   };
 }
 
-function frameBody(kind, message, offset, available) {
-  if (headerValue(message, 'transfer-encoding')?.toLowerCase().includes('chunked')) {
-    // Completeness is unknown until the chunks are decoded.
-    return { body: { offset, length: available, framing: 'chunked', declaredLength: null, complete: null }, extra: null, problems: [] };
+export function headerValues(message, name) {
+  return message.headers.filter((h) => h.name.toLowerCase() === name.toLowerCase()).map((h) => h.value);
+}
+
+function frameBody(kind, message, offset, available, buf) {
+  const status = message.startLine.status;
+  if (kind === 'response' && (status < 200 || status === 204 || status === 304)) {
+    return { body: { offset, length: 0, framing: 'none', declaredLength: 0, complete: true },
+      extra: available ? { offset, length: available } : null,
+      problems: available ? [`${available} bytes after a bodyless response`] : [] };
+  }
+  const transfer = headerValues(message, 'transfer-encoding');
+  const lengths = headerValues(message, 'content-length');
+  if (transfer.length) {
+    const codings = transfer.join(',').toLowerCase().split(',').map((v) => v.trim());
+    const problems = lengths.length ? ['Transfer-Encoding conflicts with Content-Length'] : [];
+    if (codings.at(-1) === 'chunked' && codings.filter((v) => v === 'chunked').length === 1) {
+      const chunks = parseChunked(buf, offset);
+      if (chunks.problem) problems.push(chunks.problem);
+      const surplus = available - chunks.length;
+      if (surplus) problems.push(`${surplus} bytes after the chunked body`);
+      return { body: { offset, length: chunks.length, framing: 'chunked', declaredLength: null, complete: chunks.complete },
+        chunks, extra: surplus ? { offset: offset + chunks.length, length: surplus } : null, problems };
+    }
+    return { body: { offset, length: available, framing: 'invalid', declaredLength: null, complete: false },
+      extra: null, problems: [...problems, 'unsupported or invalid Transfer-Encoding'] };
+  }
+  if (lengths.length > 1) {
+    return { body: { offset, length: available, framing: 'invalid', declaredLength: null, complete: false },
+      extra: null, problems: ['multiple Content-Length headers are not supported'] };
   }
   const declared = headerValue(message, 'content-length');
   if (declared !== undefined) return frameByLength(declared, offset, available);
@@ -86,5 +113,5 @@ export function parseHttpMessage(buf) {
   const headers = headerText ? parseHeaders(headerText, startEnd + CRLF.length) : [];
   const head = { offset: 0, length: headEnd + HEAD_END.length };
   const message = { kind, startLine: { offset: 0, length: startEnd, ...fields }, headers, head };
-  return { ...message, ...frameBody(kind, message, head.length, buf.length - head.length) };
+  return { ...message, ...frameBody(kind, message, head.length, buf.length - head.length, buf) };
 }

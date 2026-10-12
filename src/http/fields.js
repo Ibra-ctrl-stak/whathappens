@@ -47,10 +47,10 @@ function header(h, text) {
 }
 
 /** buf: one direction's decrypted application data. Never throws: a broken message is one field with a problem. */
-export function httpFields(buf) {
+export function httpFields(buf, parsed = null) {
   let msg;
   try {
-    msg = parseHttpMessage(buf);
+    msg = parsed ?? parseHttpMessage(buf);
   } catch (err) {
     return field('message', 0, buf.length, { problem: err.message });
   }
@@ -61,7 +61,7 @@ export function httpFields(buf) {
   });
   const children = [
     head,
-    ...(body.length > 0 ? [field('body', body.offset, body.length, { label: body.framing })] : []),
+    ...(body.length > 0 ? [field('body', body.offset, body.length, { label: body.framing, children: msg.chunks?.fields ?? [], problem: msg.chunks?.problem ?? null })] : []),
     ...(extra ? [leaf('extra', extra.offset, extra.length)] : []),
   ];
   return field(msg.kind, 0, buf.length, { children, problems });

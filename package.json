@@ -5,15 +5,18 @@
   "license": "MIT",
   "description": "Visualizer of your own network traffic: DNS, TCP, TLS, HTTP — byte by byte",
   "type": "module",
+  "bin": { "whathappens": "./cli.mjs" },
   "engines": {
     "node": ">=24"
   },
   "scripts": {
+    "start": "node cli.mjs",
+    "demo": "node cli.mjs --demo",
     "day1": "node day1.mjs",
     "compare": "node compare-wireshark.mjs",
     "timeline": "node timeline.mjs",
     "serve": "node serve.mjs",
-    "test": "node --test",
-    "coverage": "node --test --experimental-test-coverage --test-coverage-include=src/**"
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "coverage": "node --test --experimental-test-coverage --test-coverage-include=src/** \"test/**/*.test.mjs\""
   }
 }

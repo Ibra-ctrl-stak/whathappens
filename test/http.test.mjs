@@ -88,7 +88,7 @@ test('chunked bodies are framed as chunked and span the rest of the stream', () 
   const res = parseHttpMessage(buf);
   assert.equal(res.body.framing, 'chunked');
   assert.equal(res.body.declaredLength, null);
-  assert.equal(res.body.complete, null); // unknown until chunks are decoded
+  assert.equal(res.body.complete, true);
   assert.equal(slice(buf, res.body), '5\r\nhello\r\n0\r\n\r\n');
 });
 

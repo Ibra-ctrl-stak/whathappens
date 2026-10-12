@@ -28,7 +28,8 @@ const MAX_UNGLUED_TRIED = 4;
 /** Thrown when a limit is hit; never swallowed by the retry/fallback logic. */
 class BudgetExhausted extends Error {}
 
-const rethrowIfBudget = (err) => {
+const rethrowIfBudget = (err, ctx) => {
+  ctx.signal?.throwIfAborted();
   if (err instanceof BudgetExhausted) throw err;
 };
 
@@ -42,32 +43,41 @@ function spend(budget, kind, what) {
  * server's own address and port that answers this very question ends the wait; anything else
  * (spoofed, stale, or malformed) is ignored. server.port is for loopback tests; default 53.
  */
-export function exchange(server, query) {
+export function exchange(server, query, { signal } = {}) {
+  signal?.throwIfAborted();
   const port = server.port ?? DNS_PORT;
   return new Promise((resolve, reject) => {
     const socket = dgram.createSocket('udp4');
     let sentAt = null;
     let localPort = null;
+    let settled = false;
+    const finish = (err, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      try { socket.close(); } catch { /* cancellation before bind */ }
+      if (err) reject(fail(err));
+      else resolve(value);
+    };
+    const abort = () => finish(signal.reason);
     // Failures carry what did happen on the wire, so a lost datagram still shows up in the record.
     const fail = (err) => Object.assign(err, { sentAt, localPort, failedAt: nowMs() });
     const timer = setTimeout(() => {
-      socket.close();
-      reject(fail(new Error(`timeout ${QUERY_TIMEOUT_MS}ms from ${server.name} (${server.ip})`)));
+      finish(new Error(`timeout ${QUERY_TIMEOUT_MS}ms from ${server.name} (${server.ip})`));
     }, QUERY_TIMEOUT_MS);
 
     socket.on('error', (err) => {
-      clearTimeout(timer);
-      socket.close();
-      reject(fail(err));
+      finish(err);
     });
     socket.on('message', (msg, rinfo) => {
       if (rinfo.address !== server.ip || rinfo.port !== port || !isAnswerTo(query, msg)) return;
       const receivedAt = nowMs();
-      clearTimeout(timer);
-      socket.close();
-      resolve({ response: msg, localPort, sentAt, receivedAt });
+      finish(null, { response: msg, localPort, sentAt, receivedAt });
     });
+    signal?.addEventListener('abort', abort, { once: true });
     socket.bind(0, () => {
+      if (settled) return;
       localPort = socket.address().port;
       sentAt = nowMs();
       socket.send(query, port, server.ip);
@@ -76,12 +86,13 @@ export function exchange(server, query) {
 }
 
 async function askOnce(server, name, ctx) {
+  ctx.signal?.throwIfAborted();
   const id = randomInt(0, 0x10000);
   const query = buildQuery({ id, name, type: TYPE.A });
   spend(ctx.budget, 'queries', `query budget of ${MAX_QUERIES} exhausted while asking for ${name}`);
   let result;
   try {
-    result = await ctx.transport(server, query);
+    result = await ctx.transport(server, query, { signal: ctx.signal });
   } catch (err) {
     const { sentAt = null, localPort = null, failedAt = null } = err;
     ctx.onExchange({ server, localPort, qname: name, query, response: null, sentAt, receivedAt: null, failedAt, error: err.message, parsed: null });
@@ -109,7 +120,7 @@ async function askAny(servers, name, ctx, errors = []) {
       try {
         return await askOnce(server, name, ctx);
       } catch (err) {
-        rethrowIfBudget(err);
+        rethrowIfBudget(err, ctx);
         errors.push(err.message);
       }
     }
@@ -124,7 +135,7 @@ async function askDelegation({ glue, unglued }, name, ctx, depth) {
     try {
       return await askAny(glue, name, ctx, errors);
     } catch (err) {
-      rethrowIfBudget(err); // otherwise fall through to unglued nameservers
+      rethrowIfBudget(err, ctx); // otherwise fall through to unglued nameservers
     }
   }
   if (depth >= MAX_NS_DEPTH) throw new Error('nameserver resolution nested too deep');
@@ -133,7 +144,7 @@ async function askDelegation({ glue, unglued }, name, ctx, depth) {
       const ips = await resolveWith(nsName, ctx, depth + 1);
       return await askAny(ips.map((ip) => ({ name: nsName, ip })), name, ctx, errors);
     } catch (err) {
-      rethrowIfBudget(err);
+      rethrowIfBudget(err, ctx);
       errors.push(`${nsName}: ${err.message}`);
     }
   }
@@ -185,7 +196,7 @@ async function resolveWith(name, ctx, depth) {
  * Every UDP exchange is reported via onExchange (exact query/response bytes).
  * transport(server, query) defaults to real UDP; tests pass an in-memory one.
  */
-export async function resolveA(name, { onExchange = () => {}, transport = exchange } = {}) {
+export async function resolveA(name, { onExchange = () => {}, transport = exchange, signal } = {}) {
   const budget = { queries: MAX_QUERIES, cnameHops: MAX_CNAME_HOPS };
-  return resolveWith(name, { onExchange, transport, budget }, 0);
+  return resolveWith(name, { onExchange, transport, budget, signal }, 0);
 }

@@ -45,3 +45,15 @@ test('ignores spoofed datagrams and resolves with the genuine answer', async (t)
   const { response } = await exchange(target, query);
   assert.deepEqual(response, genuine);
 });
+
+test('cancellation interrupts a pending DNS datagram', { timeout: 1000 }, async (t) => {
+  const server = await udpSocket();
+  t.after(() => server.close());
+  const controller = new AbortController();
+  const received = once(server, 'message');
+  const pending = exchange({ name: 'loopback', ip: '127.0.0.1', port: server.address().port },
+    buildQuery({ id: 123, name: 'example.com' }), { signal: controller.signal });
+  await received;
+  controller.abort(new Error('stop DNS now'));
+  await assert.rejects(pending, /stop DNS now/);
+});

@@ -6,6 +6,8 @@
 import { parseResponse, TYPE } from './dns/packet.js';
 import { decryptSession } from './tls/decrypt.js';
 import { parseHttpMessage, headerValue } from './http/message.js';
+import { decodeHttpBody } from './http/body.js';
+import { field } from './fields.js';
 import { httpFields } from './http/fields.js';
 import { recordFields } from './tls/record-fields.js';
 import { parseHandshake } from './tls/handshake-fields.js';
@@ -212,7 +214,7 @@ function messageEvents(msg, tree, dir, buffer, timeAt) {
     at: timeAt(msg.head.length - 1), layer: 'http', kind: kinds.head, dir, buffer, ...msg.head, summary: headSummary(msg), detail, fields: part('head'),
   });
   const { body, extra, problems } = msg;
-  const bodyProblem = body.framing === 'invalid' || body.complete === false ? problems[0] : null;
+  const bodyProblem = problems.filter((p) => !/bytes after/.test(p)).join('; ') || null;
   const events = [head];
   if (body.length > 0 || bodyProblem) {
     events.push(event({
@@ -232,7 +234,7 @@ function messageEvents(msg, tree, dir, buffer, timeAt) {
   return events;
 }
 
-function httpDirection(dir, side, bounds) {
+function httpDirection(dir, side, bounds, buffers) {
   const data = side.appData;
   if (data.length === 0) return [];
   const buffer = `http/${dir}`;
@@ -244,15 +246,38 @@ function httpDirection(dir, side, bounds) {
       summary: 'damaged HTTP message', fields: tree, ...damage(tree.problem),
     })];
   }
-  return messageEvents(parseHttpMessage(data), tree, dir, buffer, timeAt);
+  const msg = parseHttpMessage(data);
+  const events = messageEvents(msg, tree, dir, buffer, timeAt);
+  const decoded = decodeHttpBody(data, msg);
+  const bodyEvent = events.find((e) => e.kind === HTTP_KINDS[dir].body);
+  if (decoded.problem && bodyEvent && !bodyEvent.damaged) {
+    Object.assign(bodyEvent, damage(decoded.problem));
+  }
+  if (decoded.problem && !bodyEvent) {
+    events.push(event({
+      at: timeAt(msg.head.length - 1), layer: 'http', kind: HTTP_KINDS[dir].body,
+      dir, buffer, offset: msg.body.offset, length: msg.body.length,
+      summary: 'body decoding unavailable', ...damage(decoded.problem),
+    }));
+  }
+  if (decoded.transformed) {
+    const id = `http-decoded/${dir}`;
+    buffers.push([id, decoded.bytes]);
+    events.push(event({
+      at: timeAt(Math.max(msg.body.offset + msg.body.length, msg.head.length) - 1),
+      layer: 'http', kind: 'decoded-body', dir, buffer: id, length: decoded.bytes.length,
+      summary: `decoded body ${decoded.bytes.length} B (chunked/gzip removed; derived bytes)`,
+      fields: field('decoded_body', 0, decoded.bytes.length),
+    }));
+  }
+  return events;
 }
 
 function httpPart(decrypted, bounds) {
   if (decrypted.error) return { buffers: [], events: [] };
-  return {
-    buffers: [['http/out', decrypted.client.appData], ['http/in', decrypted.server.appData]],
-    events: [...httpDirection('out', decrypted.client, bounds.out), ...httpDirection('in', decrypted.server, bounds.in)],
-  };
+  const buffers = [['http/out', decrypted.client.appData], ['http/in', decrypted.server.appData]];
+  const events = [...httpDirection('out', decrypted.client, bounds.out, buffers), ...httpDirection('in', decrypted.server, bounds.in, buffers)];
+  return { buffers, events };
 }
 
 // ---- assembly --------------------------------------------------------------------------------

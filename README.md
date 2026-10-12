@@ -8,15 +8,13 @@ You've read "what happens when you type google.com" a dozen times.
 `whathappens` actually does it: it resolves DNS starting from the root
 servers, opens the TCP connection, performs the TLS 1.3 handshake and
 speaks HTTP/1.1 — then lays out *your* request as an annotated timeline
-in your browser. The bytes on screen are the bytes that crossed your
-network: your DNS answers, your ClientHello with its SNI, your server's
-certificate, your first HTTP response. No root, no Wireshark, no telemetry.
+in your browser. Inspect recorded DNS and TLS bytes alongside the decrypted
+handshake and HTTP contents: your DNS answers, your ClientHello with its SNI,
+your server's certificate, your HTTP response. No root, no Wireshark, no telemetry.
 
 ```sh
-npm run day1 && npm run serve
+node cli.mjs github.com/robots.txt
 ```
-
-![timeline, hex view and field tree](docs/screenshot.png)
 
 ## What it does
 
@@ -30,27 +28,51 @@ npm run day1 && npm run serve
    independent of Node's TLS stack — only `node:crypto` primitives.
 4. **Parses the fields.** ClientHello/ServerHello with extensions (SNI, ALPN, key_share,
    supported_versions…), certificates (`X509Certificate`), CertificateVerify, NewSessionTicket,
-   HTTP headers. Every field has its own byte range; every byte belongs to exactly one field.
-5. **Checks the signatures.** The certificate chain up to a root in Node's store, and the
-   CertificateVerify signature over the reconstructed handshake transcript.
+   HTTP headers and chunk sizes/data/trailers. For parsed events, every byte belongs to exactly one leaf field.
+   DNS/TCP events have raw bytes without a field tree; X.509 internals are summarized, not dissected.
+5. **Includes signature checks.** Tested helpers verify certificate-chain signatures and
+   CertificateVerify over the reconstructed transcript. These extra checks are not yet shown
+   in the viewer; live connections use Node's normal certificate verification.
 6. **Shows it all in a page.** Event timeline, hex view, field tree: click a field to highlight
    its bytes, click a byte to find its field.
 
+## HTTP bodies
+
+Chunked transfer coding is parsed per [RFC 9112 §7.1](https://www.rfc-editor.org/rfc/rfc9112.html#section-7.1).
+Gzip content is decompressed with Node's built-in zlib. Live requests advertise `Accept-Encoding: gzip`.
+The original `response-body` stays available; a separate `decoded-body` event contains the
+assembled/decompressed bytes with offsets starting at zero. Corrupt or incomplete bodies are
+flagged and do not produce a decoded event. Decoding is limited to 4 MiB per intermediate/output
+buffer and 10,000 chunk iterations; trailers remain separate from response headers.
+
 ## Quick start
 
-Requires Node.js 24 (tested on 24.20). No dependencies.
+Requires Node.js 24+. No dependencies or install step. From the project folder:
 
 ```sh
-git clone https://github.com/Ibra-ctrl-stak/whathappens.git
-cd whathappens
-npm test                      # 179 tests, no network
-node day1.mjs                 # live run: DNS → TLS → our own decryption → out/
-npm run serve                 # local page on 127.0.0.1 (URL with a token is printed)
-npm run timeline              # the same timeline as text in the terminal
+npm run demo                              # bundled trace; no external requests
+node cli.mjs github.com/robots.txt         # record a chosen HTTPS target and serve its timeline
+node cli.mjs "https://example.com/?q=one" --timeout 60
 ```
 
-To open the page without a live run, use the reference session:
-`node serve.mjs test/fixtures/github-robots/session.json`.
+Open the printed `http://127.0.0.1:...` URL in your browser. Stop the server with Ctrl+C.
+A bare hostname means HTTPS and path `/`. Paths, query strings, IDNs and custom HTTPS ports
+are supported. URL fragments are not sent. Redirect responses are displayed, not followed.
+
+Each successful live run saves `session.json` and `keylog.txt` in a new `out/run-*` directory
+under the current working directory. The total DNS + TCP + TLS + HTTP deadline is 30 seconds
+(`--timeout 1` through `--timeout 300`); retained wire, plaintext and keylog data share a
+16 MiB byte budget. A failed live run reports an error and does not save a partial recording.
+
+```sh
+node cli.mjs --session out/run-XXXXXX/session.json   # reopen an actual saved file
+node cli.mjs --help                                 # all options, including --out
+npm test                                           # tests use local sockets; no external requests
+```
+
+The package remains unpublished and marked private. `npx whathappens` is not available yet.
+The original `node day1.mjs [path]`, `npm run serve` and `npm run timeline` commands remain
+available for the original github.com verification workflow, which uses `out/session.json`.
 
 ### Checking against Wireshark (optional)
 
@@ -74,9 +96,11 @@ through a VPN, capture on the tunnel interface.
 
 - The tool only sees **traffic it created itself**, and decrypts it with the keys of its own
   sessions through Node.js's official API. No interception, no circumvention.
-- Live recordings (`out/`: captures, keylogs, `session.json`) never reach git (`.gitignore`).
+- Live recordings (`out/`: captures, keylogs, `session.json`) are excluded by `.gitignore`.
   The one exception is the reference test session: the keys of a single public session
   (`robots.txt`), see the [fixture README](test/fixtures/github-robots/README.md).
+  Local TLS tests also include deliberately public localhost-only test credentials.
+  Treat your live recordings as sensitive: they contain the keys and contents of that request.
 - The local page: `127.0.0.1` only, random port, a 256-bit token in the URL, `Host`/`Origin`
   checks (DNS rebinding protection), a strict CSP without inline scripts, DOM built with
   `textContent` only. The page never receives the keylog or the whole session.
@@ -87,14 +111,17 @@ through a VPN, capture on the tunnel interface.
 
 - TLS 1.3 only (AES-GCM, ChaCha20-Poly1305), HTTP/1.1, IPv4 and A records.
 - Node cannot see the TCP layer (SYN/ACK, loss, retransmissions); an optional capture mode will
-  add it (in progress, see the plan).
-- Not supported yet: HelloRetryRequest, KeyUpdate, TLS 1.2, chunked/gzip body decoding.
+  add it (planned, see the plan).
+- Not supported yet: HelloRetryRequest, KeyUpdate, TLS 1.2, Brotli/deflate, transfer-coding chains, multiple HTTP responses (including 1xx followed by a final response).
+- Direct UDP/53 access to authoritative DNS servers is required for live mode; use `--demo`
+  on networks that block it. HTTP-only targets and IP-literal URLs are not supported.
 - Some VPN clients block `127.0.0.1` for browsers — the page will not open then.
 
 ## Layout
 
 | Path | What is there |
 |---|---|
+| `cli.mjs`, `src/capture.js`, `src/target.js`, `src/viewer.js` | CLI, recording, URL validation, viewer startup |
 | `src/dns/` | DNS packets and the iterative resolver |
 | `src/tls/` | session recording, decryption, handshake fields, certificates and signatures |
 | `src/http/` | HTTP/1.1 parsing and its fields |
