@@ -64,3 +64,20 @@ test('bytes above 0x7e are escaped, not folded into 7-bit ASCII', () => {
   const msg = parseResponse(responseWithOwner([Buffer.from([0xe9]), Buffer.from('example')]));
   assert.equal(msg.answers[0].name, '\\233.example');
 });
+
+// ---- limits of names from the network ------------------------------------------------------------
+
+test('a compression pointer cut off at the end of the packet is an error, not a jump to offset 0', () => {
+  const header = Buffer.from([0x00, 0x00, 0x84, 0x00, 0, 0, 0, 1, 0, 0, 0, 0]); // id 0: offset 0 reads as an empty name
+  const owner = Buffer.from([7, ...Buffer.from('example'), 0]);
+  const rr = Buffer.from([0, 5, 0, 1, 0, 0, 0, 60, 0, 1, 0xc0]); // CNAME, rdlength 1: only the first pointer byte
+  assert.throws(() => parseResponse(Buffer.concat([header, owner, rr])), /DNS compression pointer runs past end of packet/);
+});
+
+test('a DNS name longer than 255 bytes on the wire is refused; exactly 255 is accepted', () => {
+  const label = (n) => Buffer.alloc(n, 0x61);
+  assert.throws(() => parseResponse(responseWithOwner([label(63), label(63), label(63), label(63), label(10)])),
+    /DNS name longer than 255 bytes/);
+  const longest = parseResponse(responseWithOwner([label(63), label(63), label(63), label(61)])); // 3*64 + 62 + 1 = 255
+  assert.equal(longest.answers[0].name.length, 63 * 3 + 61 + 3);
+});

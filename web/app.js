@@ -58,7 +58,7 @@ function row(e, durationMs) {
   what.append(el('span', 'summary', e.summary));
   if (e.damaged) what.append(el('span', 'problem', `повреждено: ${e.problem}`));
   item.append(
-    el('span', 'time', formatMs(e.t)),
+    el('span', 'time', e.t === null && !e.capture ? 'время не записано' : formatMs(e.t)),
     timeBar(e, durationMs),
     el('span', 'chip', LAYER_TITLES[e.layer]),
     el('span', 'dir', ARROWS[e.dir] ?? '·'),

@@ -115,3 +115,63 @@ test('DNS: an undecodable response is a damaged event over its bytes', () => {
   assert.match(e.problem, /runs past end|malformed/);
   assert.equal(e.length, bad.length);
 });
+
+// ---- DNS exchanges that failed before the query went out -------------------------------------------
+
+const notSentFirst = (failedAt) => {
+  const first = golden.dns[0];
+  return { ...first, localPort: null, sentAt: null, receivedAt: null, responseHex: null, failedAt, error: 'bind EACCES' };
+};
+
+test('DNS: a query that failed before bind is not shown as sent; its real failure time is kept', () => {
+  const t = timelineOf({ ...golden, dns: [notSentFirst(golden.dns[0].sentAt - 3), ...golden.dns] });
+  const [e] = t.events.filter((ev) => ev.buffer === 'dns/0/query');
+  assert.deepEqual([e.layer, e.kind, e.t], ['dns', 'not-sent', 0]);
+  assert.match(e.summary, /^A\? github\.com -> .+ not sent: bind EACCES$/);
+  assert.equal(e.length, Buffer.from(golden.dns[0].queryHex, 'hex').length, 'the bytes that would have been sent');
+  assert.equal(ofKind(t, 'dns', 'query').length, golden.dns.length, 'only queries that went out are queries');
+  assert.equal(ofKind(t, 'tls', 'record').length, ofKind(timelineOf(golden), 'tls', 'record').length, 'other layers intact');
+});
+
+test('DNS: an exchange with no recorded time is listed after the timed events, never at an invented time', () => {
+  const lostNoTime = { ...golden.dns[1], responseHex: null, receivedAt: null, failedAt: null, error: 'timeout' };
+  const t = timelineOf({ ...golden, dns: [notSentFirst(null), lostNoTime, ...golden.dns.slice(2)] });
+  const untimed = t.events.filter((e) => e.t === null);
+  assert.deepEqual(untimed.map((e) => [e.kind, e.buffer]), [['not-sent', 'dns/0/query'], ['lost', null]]);
+  assert.ok(untimed.every((e) => /no time recorded/.test(e.summary)));
+  assert.deepEqual(t.events.slice(-2), untimed, 'after every timed event');
+  assert.equal(ofKind(t, 'dns', 'query').filter((e) => e.buffer === 'dns/1/query')[0].t !== null, true, 'its query did go out, with a time');
+});
+
+// ---- TLS record and hello lengths --------------------------------------------------------------------
+
+test('a record header with a length above the TLS limit is named, not decrypted; earlier records survive', () => {
+  const tooLong = Buffer.concat([Buffer.from([0x17, 0x03, 0x03, 0x41, 0x01]), Buffer.alloc(0x4101)]); // 16641 > 2^14 + 256
+  const t = timelineOf(editStream(golden, 'in', (s) => Buffer.concat([s, tooLong])));
+  const last = ofKind(t, 'tls', 'record').filter((e) => e.dir === 'in').at(-1);
+  assert.equal(last.damaged, true);
+  assert.match(last.problem, /record length 16641 exceeds the TLS limit of 16640 bytes/);
+  assert.equal(last.length, tooLong.length);
+  assert.equal(last.offset + last.length, t.buffers['tcp/in'].length);
+  assert.equal(damaged(t).length, 1, 'everything before it still decrypts');
+});
+
+test('an encrypted record body shorter than the AEAD tag is named so; a forged 17-byte body still fails authentication', async () => {
+  const { decryptRecord } = await import('../src/tls/decrypt.js');
+  const keys = trafficKeys(SUITE, secrets.SERVER_TRAFFIC_SECRET_0);
+  const record = (n) => ({ header: Buffer.from([0x17, 0x03, 0x03, 0, n]), body: Buffer.alloc(n, 7) });
+  assert.throws(() => decryptRecord(SUITE, keys, 0, record(10)), /record body of 10 bytes is shorter than the 16-byte AEAD tag plus a content type/);
+  assert.throws(() => decryptRecord(SUITE, keys, 0, record(16)), /shorter than the 16-byte AEAD tag plus a content type/);
+  assert.throws(() => decryptRecord(SUITE, keys, 0, record(17)), /unable to authenticate/);
+});
+
+test('a ClientHello or ServerHello too short for its fixed fields is named, not read past its end', () => {
+  const handshakeRecord = (type, body) => Buffer.concat([Buffer.from([0x16, 0x03, 0x03, 0, body.length + 4, type, 0, 0, body.length]), body]);
+  const shortServer = editStream(golden, 'in', () => handshakeRecord(2, Buffer.from([0x03, 0x03, 1, 2, 3, 4])));
+  assert.throws(() => decryptSession(loadSession(shortServer).tls), /ServerHello is too short \(6 bytes\)/);
+  const t = timelineOf(shortServer);
+  assert.match(ofKind(t, 'tls', 'stream')[0].problem, /ServerHello is too short/);
+  assert.equal(ofKind(t, 'dns', 'query').length, golden.dns.length, 'DNS and TCP events stay');
+  const shortClient = editStream(golden, 'out', () => handshakeRecord(1, Buffer.from([0x03, 0x03, 9, 9])));
+  assert.throws(() => decryptSession(loadSession(shortClient).tls), /ClientHello is too short \(4 bytes\)/);
+});

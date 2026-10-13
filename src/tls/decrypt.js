@@ -7,6 +7,7 @@ const HANDSHAKE = Object.freeze({ CLIENT_HELLO: 1, SERVER_HELLO: 2, FINISHED: 20
 const RECORD_HEADER_LEN = 5;
 const AEAD_TAG_LEN = 16;
 const IV_LEN = 12;
+const MAX_RECORD_LEN = 2 ** 14 + 256; // RFC 8446 §5.2: TLSCiphertext.length limit (TLSPlaintext is lower)
 // RFC 8446 §4.1.3: ServerHello.random of a HelloRetryRequest
 const HRR_RANDOM = 'cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c';
 
@@ -58,12 +59,19 @@ export function trafficKeys(suite, secret) {
   };
 }
 
-/** Split a byte stream into TLS records. */
+/**
+ * Split a byte stream into TLS records. trailing: bytes after the last whole record; problem:
+ * why they are not a record when it is not just the end of the stream (an invalid length).
+ */
 export function splitRecords(stream) {
   const records = [];
   let pos = 0;
   while (pos + RECORD_HEADER_LEN <= stream.length) {
     const length = stream.readUInt16BE(pos + 3);
+    if (length > MAX_RECORD_LEN) {
+      // Where the next record would start is unknown: the rest of the stream stays unsplit.
+      return { records, trailing: stream.length - pos, problem: `record length ${length} exceeds the TLS limit of ${MAX_RECORD_LEN} bytes` };
+    }
     const end = pos + RECORD_HEADER_LEN + length;
     if (end > stream.length) break;
     records.push({
@@ -75,7 +83,7 @@ export function splitRecords(stream) {
     });
     pos = end;
   }
-  return { records, trailing: stream.length - pos };
+  return { records, trailing: stream.length - pos, problem: null };
 }
 
 function nonceFor(iv, seq) {
@@ -88,6 +96,9 @@ function nonceFor(iv, seq) {
 
 /** Decrypt one TLSCiphertext; returns TLSInnerPlaintext split into content + real type. */
 export function decryptRecord(suite, keys, seq, record) {
+  if (record.body.length < AEAD_TAG_LEN + 1) {
+    throw new Error(`record body of ${record.body.length} bytes is shorter than the ${AEAD_TAG_LEN}-byte AEAD tag plus a content type`);
+  }
   const ciphertext = record.body.subarray(0, record.body.length - AEAD_TAG_LEN);
   const tag = record.body.subarray(record.body.length - AEAD_TAG_LEN);
   const decipher = createDecipheriv(suite.cipher, keys.key, nonceFor(keys.iv, seq), {
@@ -121,6 +132,11 @@ function helloInfo(records, expectedType) {
   const { messages } = takeHandshakeMessages(first.body);
   const hello = messages.find((m) => m.type === expectedType);
   if (!hello) throw new Error(`handshake type ${expectedType} not found in first record`);
+  // version (2), random (32), session id length (1) + id, then 2 bytes read by the caller
+  const fixed = 35 + (hello.body.length > 34 ? hello.body[34] : 0) + 2;
+  if (hello.body.length < fixed) {
+    throw new Error(`${expectedType === HANDSHAKE.CLIENT_HELLO ? 'ClientHello' : 'ServerHello'} is too short (${hello.body.length} bytes) for its version, random, session id and cipher suite`);
+  }
   const random = hello.body.subarray(2, 34).toString('hex');
   const sidLen = hello.body[34];
   return { random, body: hello.body, afterSessionId: 35 + sidLen };
@@ -229,6 +245,7 @@ export function decryptSession({ raw, keylog }) {
     clientRandom,
     serverRandom: serverHello.random,
     trailingBytes: { client: client.trailing, server: server.trailing },
+    trailingProblems: { client: client.problem, server: server.problem },
     client: decryptDirection(
       client.records,
       suite,

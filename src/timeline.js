@@ -66,16 +66,24 @@ function dnsResponseEvent(e, rId) {
   });
 }
 
+// A DNS event whose time was never recorded keeps at: null and says so (see buildTimeline).
+const untimed = (at) => (at === null || at === undefined ? '; no time recorded' : '');
+
 function dnsPart(dns) {
   const parts = dns.map((e, i) => {
     const qId = `dns/${i}/query`;
-    const query = bytesEvent(qId, e.query, {
-      at: e.sentAt, layer: 'dns', kind: 'query', dir: 'out',
-      summary: `A? ${e.qname} -> ${e.server.name} (${e.server.ip})`,
-      detail: { server: e.server, localPort: e.localPort, id: e.query.readUInt16BE(0) },
-    });
+    const asked = `A? ${e.qname} -> ${e.server.name} (${e.server.ip})`;
+    const detail = { server: e.server, localPort: e.localPort, id: e.query.readUInt16BE(0) };
+    if (e.sentAt === null && !e.response) {
+      // Failed before the socket was bound: the query was built but never sent.
+      const at = e.failedAt ?? null;
+      const notSent = bytesEvent(qId, e.query, { at, layer: 'dns', kind: 'not-sent', dir: 'out', summary: `${asked} not sent: ${e.error}${untimed(at)}`, detail });
+      return { buffers: [[qId, e.query]], events: [notSent] };
+    }
+    const query = bytesEvent(qId, e.query, { at: e.sentAt, layer: 'dns', kind: 'query', dir: 'out', summary: asked, detail });
     if (!e.response) {
-      const lost = event({ at: e.failedAt, layer: 'dns', kind: 'lost', summary: `no answer from ${e.server.name}: ${e.error}`, detail: { server: e.server, localPort: e.localPort } });
+      const at = e.failedAt ?? null;
+      const lost = event({ at, layer: 'dns', kind: 'lost', summary: `no answer from ${e.server.name}: ${e.error}${untimed(at)}`, detail: { server: e.server, localPort: e.localPort } });
       return { buffers: [[qId, e.query]], events: [query, lost] };
     }
     const rId = `dns/${i}/response`;
@@ -145,12 +153,16 @@ function recordEvent(dir, r, bounds, streams) {
   });
 }
 
-/** The stream ended inside a record: its bytes are shown, flagged. */
-function incompleteRecordEvent(dir, streamLength, trailing, bounds) {
+/**
+ * Bytes after the last whole record, shown and flagged: the stream ended mid-record, or (problem)
+ * a record header that cannot be valid, after which records cannot be found again.
+ */
+function incompleteRecordEvent(dir, streamLength, trailing, bounds, problem) {
   return event({
     at: timeAtByte(bounds[dir], streamLength - 1), layer: 'tls', kind: 'record', dir, buffer: `tcp/${dir}`,
-    offset: streamLength - trailing, length: trailing, summary: 'incomplete record',
-    ...damage(`incomplete record: ${trailing} bytes, the stream ended mid-record`),
+    offset: streamLength - trailing, length: trailing, summary: problem ? 'invalid record' : 'incomplete record',
+    ...damage(problem ? `invalid record: ${problem}; the remaining ${trailing} bytes are not split into records`
+      : `incomplete record: ${trailing} bytes, the stream ended mid-record`),
   });
 }
 
@@ -205,7 +217,7 @@ function tlsPart(tls, decrypted, bounds, streams) {
   const records = sides.flatMap(([dir, side, name]) => {
     const trailing = decrypted.trailingBytes[name];
     const streamLength = bounds[dir].at(-1)?.end ?? 0;
-    const tail = trailing > 0 ? [incompleteRecordEvent(dir, streamLength, trailing, bounds)] : [];
+    const tail = trailing > 0 ? [incompleteRecordEvent(dir, streamLength, trailing, bounds, decrypted.trailingProblems[name])] : [];
     const messages = handshakeMessageEvents(dir, side, bounds, dir === 'in' ? checksFor : undefined);
     return [...side.records.map((r) => recordEvent(dir, r, bounds, streams)), ...tail, ...messages];
   });
@@ -414,8 +426,9 @@ export function buildTimeline(session, { capture = null } = {}) {
     dnsPart(session.dns), tcpPart(session.tls, bounds, streams), capturePart(capture, session.tls), tlsPart(session.tls, decrypted, bounds, streams), httpPart(decrypted, bounds),
   ];
   const all = parts.flatMap((p) => p.events);
-  // Only events from an unaligned capture may lack a time (see capturePart); anything else must have one.
-  const untimedAllowed = (e) => e.at === null && e.capture !== null;
+  // Only events from an unaligned capture (capturePart) and DNS failures recorded without a time
+  // (dnsPart) may lack a time; anything else must have one.
+  const untimedAllowed = (e) => e.at === null && (e.capture !== null || (e.layer === 'dns' && (e.kind === 'not-sent' || e.kind === 'lost')));
   const missing = all.find((e) => !Number.isFinite(e.at) && !untimedAllowed(e));
   if (missing) throw new Error(`${missing.layer}/${missing.kind} has no timestamp in this recording`);
 
@@ -425,7 +438,7 @@ export function buildTimeline(session, { capture = null } = {}) {
     t: e.at === null ? null : roundUs(e.at - origin), ...e, index,
     summary: printable(e.summary), problem: e.problem === null ? null : printable(e.problem), detail: printableDeep(e.detail), fields: printableDeep(e.fields), checks: printableDeep(e.checks), capture: printableDeep(e.capture),
   }));
-  // Timed events in time order, then untimed ones (unaligned capture) in their own capture order.
+  // Timed events in time order, then untimed ones (unaligned capture, DNS without a time) in their own order.
   const events = [
     ...prepared.filter((e) => e.t !== null).sort((a, b) => a.t - b.t || a.index - b.index),
     ...prepared.filter((e) => e.t === null),

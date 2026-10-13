@@ -5,6 +5,7 @@ const TYPE_NAME = Object.freeze(Object.fromEntries(Object.entries(TYPE).map(([k,
 const CLASS_IN = 1;
 const EDNS_UDP_SIZE = 1232;
 const MAX_POINTER_JUMPS = 64;
+const MAX_NAME_WIRE_LENGTH = 255; // RFC 1035 §2.3.4: length bytes, labels and the final zero
 
 function encodeName(name) {
   const labels = name.replace(/\.$/, '').split('.').filter(Boolean);
@@ -55,6 +56,7 @@ function readName(buf, offset) {
   const labels = [];
   let pos = offset;
   let end = null;
+  let wireLength = 1; // the final zero byte
   for (let jumps = 0; jumps <= MAX_POINTER_JUMPS; ) {
     if (pos >= buf.length) throw new Error('DNS name runs past end of packet');
     const len = buf[pos];
@@ -62,11 +64,14 @@ function readName(buf, offset) {
       return { name: labels.join('.') || '.', next: end ?? pos + 1 };
     }
     if ((len & 0xc0) === 0xc0) {
+      if (pos + 1 >= buf.length) throw new Error('DNS compression pointer runs past end of packet');
       if (end === null) end = pos + 2;
       pos = ((len & 0x3f) << 8) | buf[pos + 1];
       jumps += 1;
       continue;
     }
+    wireLength += 1 + len;
+    if (wireLength > MAX_NAME_WIRE_LENGTH) throw new Error(`DNS name longer than ${MAX_NAME_WIRE_LENGTH} bytes`);
     labels.push(escapeLabel(buf.subarray(pos + 1, pos + 1 + len)));
     pos += 1 + len;
   }
