@@ -16,6 +16,10 @@ your server's certificate, your HTTP response. No root, no Wireshark, no telemet
 node cli.mjs github.com/robots.txt
 ```
 
+![The bundled demo: the ClientHello record with its field tree; the selected field legacy_record_version and its two bytes are highlighted in the hex view](docs/screenshot.png)
+
+*The bundled demo trace (`npm run demo`). The page labels are in Russian for now.*
+
 ## What it does
 
 1. **Iterative DNS with its own packets.** No `dns.lookup`: root server → `.com` →
@@ -48,6 +52,10 @@ node cli.mjs github.com/robots.txt
 6. **Shows it all in a page.** Event timeline, hex view, field tree: click a field to highlight
    its bytes, click a byte to find its field.
 
+   | Full width | Narrow window |
+   |---|---|
+   | ![Full-width mode: field tree and hex view side by side](docs/screenshot-full-width.png) | ![Narrow window: the field tree above the hex view](docs/screenshot-narrow.png) |
+
 ## HTTP bodies
 
 Chunked transfer coding is parsed per [RFC 9112 §7.1](https://www.rfc-editor.org/rfc/rfc9112.html#section-7.1).
@@ -69,7 +77,14 @@ empty "damaged" event that says so.
 
 ## Quick start
 
-Requires Node.js 24+. No dependencies or install step. From the project folder:
+Requires Node.js 24+. No dependencies or install step.
+
+```sh
+git clone https://github.com/Ibra-ctrl-stak/whathappens.git
+cd whathappens
+```
+
+From the project folder:
 
 ```sh
 npm run demo                              # bundled trace; no external requests
