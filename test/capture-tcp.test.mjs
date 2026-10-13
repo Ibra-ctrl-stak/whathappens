@@ -272,3 +272,32 @@ test('mid-connection capture: a payload that occurs more than once in the record
   const t = buildTimeline(repeated, { capture: a });
   assert.ok(t.events.filter((e) => e.kind === 'segment' && e.dir === 'in').every((e) => e.buffer === null && e.length === 0), 'no tcp/in range is given');
 });
+
+// ---- a live capture's source (slice 2: --capture) ----------------------------------------------
+
+test('API: a live capture names its run; its dumpcap warnings and the packet checks are both shown', async (t) => {
+  const { openViewer } = await import('../src/viewer.js');
+  const warnings = ['dumpcap was stopped before the end of the connection (FIN from both sides, or RST) appeared in the capture'];
+  const viewer = await openViewer(JSON.parse(fixture('session.json')), {
+    capture: fixture('capture.pcapng'), captureRun: { status: 'live', iface: 'Ethernet 2', stopReason: 'wait-timeout', warnings },
+  });
+  t.after(() => viewer.close());
+  assert.equal(viewer.capture.complete, false);
+  const overview = (await (await fetch(new URL('timeline.json', viewer.url))).json()).events.find((e) => e.kind === 'capture');
+  assert.match(overview.summary, /^INCOMPLETE capture: 34 TCP segments/);
+  const { checked, ...source } = overview.capture.source;
+  assert.equal(checked.length, 4);
+  assert.deepEqual(source, { metadata: 'live', metadataProblem: null, iface: 'Ethernet 2', stopReason: 'wait-timeout', complete: false, packetWarnings: [], dumpcapWarnings: warnings });
+  const fromFile = await openViewer(JSON.parse(fixture('session.json')), { capture: fixture('capture.pcapng') });
+  t.after(() => fromFile.close());
+  assert.deepEqual([fromFile.capture.metadata, fromFile.capture.complete], ['missing', null], 'the Wireshark fixture: packets clean, run unknown');
+});
+
+test('CLI: --capture is for live requests; --dumpcap needs --capture; a missing dumpcap is named', async () => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = (...args) => promisify(execFile)(process.execPath, [new URL('../cli.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), ...args]);
+  await assert.rejects(run('--demo', '--capture', '1'), /--capture apply only to live requests/);
+  await assert.rejects(run('example.com', '--dumpcap', 'x'), /--dumpcap applies only with --capture/);
+  await assert.rejects(run('example.com', '--capture', '1', '--dumpcap', 'no-such-dir/dumpcap.exe'), /dumpcap not found at no-such-dir\/dumpcap\.exe/);
+});

@@ -273,8 +273,40 @@ function segmentLines(c) {
   ];
 }
 
+const STOP_REASONS = {
+  'connection-end': 'остановлен после FIN/RST соединения',
+  'wait-timeout': 'остановлен, не дождавшись конца соединения',
+  'dumpcap-exited': 'dumpcap завершился сам до остановки',
+  'size-limit': 'остановлен по лимиту размера',
+};
+
+function runLine(s) {
+  if (s.metadata === 'live') return `Живой захват dumpcap на интерфейсе ${s.iface}: ${STOP_REASONS[s.stopReason] ?? s.stopReason}.`;
+  if (s.metadata === 'saved') return `Сохранённый живой захват dumpcap (интерфейс ${s.iface}): ${STOP_REASONS[s.stopReason] ?? s.stopReason}. Сведения из capture.json, файл совпал по размеру и SHA-256.`;
+  if (s.metadata === 'missing') return 'Работа захватчика неизвестна: рядом нет capture.json. Проверено только по пакетам.';
+  return `capture.json не использован: ${s.metadataProblem}. Работа захватчика неизвестна; проверено только по пакетам.`;
+}
+
+function verdict(s) {
+  if (s.complete === true) return 'Итог: ничего не известно как пропущенное (пакеты и работа dumpcap).';
+  if (s.complete === false) return 'Итог: захват НЕПОЛНЫЙ — показано только то, что в нём есть.';
+  return 'Итог: по пакетам замечаний нет, но о работе захватчика ничего не известно — полнота не подтверждена.';
+}
+
+function sourceLines(s) {
+  if (!s) return [];
+  return [
+    line(verdict(s)),
+    line(runLine(s)),
+    line(`Проверено по пакетам: ${s.checked.join('; ')}.${s.packetWarnings.length ? '' : ' Замечаний нет.'}`),
+    ...s.packetWarnings.map((w) => el('p', 'check-reason', `Пакеты: ${w}`)),
+    ...(s.dumpcapWarnings ?? []).map((w) => el('p', 'check-reason', `dumpcap: ${w}`)),
+  ];
+}
+
 function overviewLines(c) {
   return [
+    ...sourceLines(c.source),
     line(`Сопоставление: ${c.status} — ${c.reason}`),
     ...(c.alignment ? [line(`Время: ${c.alignment.status}. ${c.alignment.rule}`)] : []),
     ...(c.alignment?.warning ? [el('p', 'check-reason', c.alignment.warning)] : []),

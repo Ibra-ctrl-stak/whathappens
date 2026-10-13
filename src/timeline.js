@@ -382,15 +382,16 @@ function segmentSummary(s) {
 function capturePart(capture, tls) {
   if (!capture) return { buffers: [], events: [] };
   const { segments, alignment: align } = capture;
+  const incomplete = capture.source?.complete === false ? 'INCOMPLETE ' : '';
   const summary = capture.status === 'matched'
-    ? `capture: ${segments.length} TCP segments of ${capture.reason}; time ${align.status === 'aligned' ? `aligned by frame ${align.anchorFrame}` : 'not aligned'}`
-    : `capture not used (${capture.status}): ${capture.reason}`;
+    ? `${incomplete}capture: ${segments.length} TCP segments of ${capture.reason}; time ${align.status === 'aligned' ? `aligned by frame ${align.anchorFrame}` : 'not aligned'}`
+    : `${incomplete}capture not used (${capture.status}): ${capture.reason}`;
   // Without a reliable clock alignment, capture events get no place on the shared time axis
   // (at: null): they are listed after the recording, in capture order, never at an invented time.
   const aligned = align?.status === 'aligned';
   const overview = event({
     at: aligned ? segments[0].timeMs : null, layer: 'tcp', kind: 'capture', summary,
-    capture: { status: capture.status, reason: capture.reason, alignment: align, reader: capture.reader, connection: capture.connection ?? null, counts: capture.counts ?? null },
+    capture: { status: capture.status, reason: capture.reason, alignment: align, reader: capture.reader, connection: capture.connection ?? null, counts: capture.counts ?? null, source: capture.source ?? null },
   });
   const events = segments.map((s) => {
     const mapped = s.mapping.status === 'matches';

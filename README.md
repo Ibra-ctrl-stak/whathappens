@@ -135,6 +135,52 @@ node cli.mjs --demo --pcap test/fixtures/github-robots/capture.pcapng   # bundle
   packets; IPv4 + TCP over raw IP, Ethernet (incl. VLAN) or loopback; IP fragments are not
   reassembled and not used; a file cut short keeps the packets read so far. IP/TCP headers have
   no field tree yet.
+- **Completeness, checked by the packets** (any capture, also `--pcap`): the file is not cut, the
+  client SYN is there, every recorded byte is covered, and the connection ends with both FINs and
+  the ACK of each, or an RST. What is missing is listed and the capture is called **incomplete**.
+  Packets alone never make it **complete**: that also needs to know how the capture ran (see
+  `capture.json` below). Without it the page says the packets show no problem, but how the capture
+  was made is unknown.
+
+### Capturing during a live request (`--capture`)
+
+With Wireshark installed (dumpcap; Npcap on Windows), whathappens can run the capture itself:
+
+```sh
+"C:\Program Files\Wireshark\dumpcap.exe" -D          # list interfaces
+node cli.mjs github.com/robots.txt --capture 7        # number or name from that list
+node cli.mjs github.com/robots.txt --capture 7 --dumpcap "D:\Wireshark\dumpcap.exe"
+```
+
+- The interface is always yours to choose; it is never guessed. Through a VPN, choose the tunnel
+  interface: on the physical one, the connection is inside the tunnel's encrypted packets.
+- dumpcap is found as `--dumpcap <path>`, else in `PATH`, else in the standard Wireshark folder,
+  and started without a shell. It starts after DNS (its filter needs the address) and before the
+  TCP connection, keeps only `host <server IPv4> and tcp port <port>`, and is ready when it reports
+  "Capturing on" plus a 500 ms pause: without that pause, the client SYN was missing in 3 of 5
+  measured runs.
+- Limits: dumpcap stops by itself after the request deadline + 7 s (`-a duration`), and the
+  capture is cut at 64 MiB (the reader's limit).
+- Stopping (Windows, measured): Node cannot send dumpcap a Ctrl+C, and terminating a dumpcap that
+  writes its own file loses its buffered packets. So dumpcap writes pcapng to whathappens
+  (`-w -`), which waits up to 2 s for both FINs (or an RST) of the connection, then stops dumpcap
+  and waits for it to exit. dumpcap is stopped on success, error, timeout and Ctrl+C.
+- The capture is saved as `capture.pcapng` next to `session.json` in the same `out/run-*` folder,
+  with `capture.json` (format 1): what the pcapng cannot say about itself — the interface, why
+  dumpcap was stopped (connection end, wait timeout, size limit, dumpcap exited by itself) and
+  dumpcap's warnings — plus the size and SHA-256 of `capture.pcapng`. No dumpcap path, command
+  line, process IDs or raw dumpcap output are saved.
+- The capture is checked by its packets as above, and called **incomplete** also if dumpcap was
+  stopped before the connection ended, reached the size limit, or stopped early. It is
+  **complete** only when neither the packets nor dumpcap show anything missing. A capture that
+  fails is never shown as a success; the recording is still saved.
+- Reopening (`--session run/session.json --pcap run/capture.pcapng`) reads `capture.json` from the
+  capture's folder and merges both levels again, so no warning is lost. It is used only if its
+  size and SHA-256 match the opened file; otherwise, or if it is unreadable, it is ignored and the
+  page says why. No `capture.json` (older recordings, Wireshark files) is not an error.
+- Errors are explained: dumpcap not found, access denied (whathappens does not change Npcap,
+  adapter, VPN or firewall settings), unknown interface, no readiness within 10 s, early exit.
+- Without `--capture`, nothing of this runs and nothing beyond Node is needed.
 
 ## How it is verified
 
@@ -165,9 +211,12 @@ node cli.mjs --demo --pcap test/fixtures/github-robots/capture.pcapng   # bundle
 ## Limitations
 
 - TLS 1.3 only (AES-GCM, ChaCha20-Poly1305), HTTP/1.1, IPv4 and A records.
-- Node cannot see the TCP layer itself. Real TCP segments come only from a pcapng capture you add
-  with `--pcap` (see "TCP segments from a capture"); whathappens does not start a capture itself
-  yet. Without `--pcap`, TCP events are Node socket reads/writes, not segments.
+- Node cannot see the TCP layer itself. Real TCP segments come only from a pcapng capture: one
+  you add with `--pcap`, or one made with `--capture` (see "TCP segments from a capture"). Without
+  them, TCP events are Node socket reads/writes, not segments.
+- `--capture` readiness is "Capturing on" plus a measured pause, not a guarantee; a missing SYN is
+  reported. Packets dumpcap has not passed on when it is stopped (e.g. a last ACK after both FINs)
+  are not in the file; the capture is then called incomplete. Checked live on Windows only.
 - Not supported yet: HelloRetryRequest, KeyUpdate, TLS 1.2, Brotli/deflate, transfer-coding chains, protocol upgrades after `101`, more than one final response on a connection (pipelining), HTTP/2.
 - Direct UDP/53 access to authoritative DNS servers is required for live mode; use `--demo`
   on networks that block it. HTTP-only targets and IP-literal URLs are not supported.
@@ -181,6 +230,7 @@ node cli.mjs --demo --pcap test/fixtures/github-robots/capture.pcapng   # bundle
 | `src/dns/` | DNS packets and the iterative resolver |
 | `src/tls/` | session recording, decryption, handshake fields, certificates and signatures |
 | `src/http/` | HTTP/1.1 parsing and its fields |
+| `src/pcap/` | pcapng reading, finding our connection in a capture, completeness checks, running dumpcap (`--capture`), `capture.json` |
 | `src/timeline.js` | the unified event timeline `{ buffer, offset, length, fields }` |
 | `src/server/`, `web/` | the local page |
 | `test/` | tests, the fixture, RFC 8448 vectors |

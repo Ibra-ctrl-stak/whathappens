@@ -65,6 +65,12 @@ export function flowFromSession(session, { clientIsn = 1000, serverIsn = 500000,
   return { packets, streams, local, remote };
 }
 
+/** The server's ACK of the client FIN that ends flowFromSession(...) (pass the same ISNs). */
+export function finalAckOf(flow, { clientIsn = 1000, serverIsn = 500000 } = {}) {
+  return { dir: 'in', timeMs: flow.packets.at(-1).timeMs + 1, data: ipv4Tcp({ src: flow.remote, dst: flow.local,
+    seq: serverIsn + 2 + flow.streams.in.length, ack: clientIsn + 2 + flow.streams.out.length, flags: ['ACK'] }) };
+}
+
 const LINK = { RAW: 101, ETHERNET: 1, NULL: 0 };
 
 /** pcapng of packets; link: 'RAW' | 'ETHERNET' | 'NULL'; tsresol: if_tsresol byte (6 = microseconds). */

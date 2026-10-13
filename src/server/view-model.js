@@ -31,6 +31,12 @@ function captureView(c) {
     reader: only(c.reader, ['packets', 'truncated', 'problems', 'skipped']),
     connection: only(c.connection, ['firstFrame', 'packets', 'candidates', 'anchors']),
     counts: c.counts ?? null,
+    source: c.source ? {
+      ...only(c.source, ['metadata', 'metadataProblem', 'iface', 'stopReason', 'complete']),
+      checked: [...c.source.checked],
+      packetWarnings: [...c.source.packetWarnings],
+      dumpcapWarnings: c.source.dumpcapWarnings ? [...c.source.dumpcapWarnings] : null,
+    } : null,
   };
 }
 
